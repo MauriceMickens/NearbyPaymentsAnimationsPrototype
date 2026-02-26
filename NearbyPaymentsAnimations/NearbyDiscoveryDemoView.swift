@@ -279,7 +279,8 @@ struct NearbyDiscoveryDemoView: View {
             showAvatar = false
             avatarOpacity = 0
             // Show title after formation completes
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+                guard currentPhase == .forming else { return }
                 withAnimation(.easeIn(duration: 0.5)) {
                     showTitle = true
                     titleText = "Looking for people nearby"
@@ -307,7 +308,8 @@ struct NearbyDiscoveryDemoView: View {
             animator.showPerson(at: personPos, time: time)
 
             // Show avatar after dots converge
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [self] in
+                guard currentPhase == .personFound else { return }
                 withAnimation(.spring(duration: 0.4, bounce: 0.3)) {
                     showAvatar = true
                     avatarOpacity = 1
