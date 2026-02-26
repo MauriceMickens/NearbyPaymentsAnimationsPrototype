@@ -127,10 +127,11 @@ final class DotGridAnimator {
                     y: gridOrigin.y + CGFloat(row) * config.dotSpacing
                 )
 
-                // Random starting position (scattered across canvas + some overflow)
+                // Start near grid position with a small random offset
+                let scatter: CGFloat = 40
                 let randomPos = CGPoint(
-                    x: CGFloat.random(in: -30...(size.width + 30)),
-                    y: CGFloat.random(in: -30...(size.height + 30))
+                    x: gridPos.x + CGFloat.random(in: -scatter...scatter),
+                    y: gridPos.y + CGFloat.random(in: -scatter...scatter)
                 )
 
                 let baseOpacity = config.baseOpacity +
@@ -352,7 +353,7 @@ final class DotGridAnimator {
             let dy = dots[i].gridPosition.y - centerY
             let dist = sqrt(dx * dx + dy * dy)
             let maxDist = sqrt(centerX * centerX + centerY * centerY)
-            let stagger = Double(dist / maxDist) * 0.8
+            let stagger = Double(dist / maxDist) * 0.25
 
             let localElapsed = max(0, gridElapsed - stagger)
             let t = min(1.0, localElapsed / gridDuration)
