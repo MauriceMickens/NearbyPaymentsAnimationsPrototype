@@ -64,7 +64,7 @@ final class DotGridAnimator {
         var baseOpacity: Double = 0.3
         var opacityVariation: Double = 0.08
         /// Duration for chaos → grid formation
-        var formationDuration: TimeInterval = 1.2
+        var formationDuration: TimeInterval = 2.0
         /// Wave speed in points per second
         var waveSpeed: CGFloat = 80
         /// Wave amplitude (dot displacement in points)
@@ -217,6 +217,9 @@ final class DotGridAnimator {
         phase = .forming
         phaseStartTime = animationTime
         backgroundProgress = 0
+        // Dots start moving immediately (hidden behind the green overlay).
+        // Wave clock starts when the earliest dots are ~70% formed.
+        waveStartTime = animationTime + config.formationDuration * 0.7
         // Place dots at random positions with zero opacity
         for i in dots.indices {
             dots[i].position = dots[i].randomPosition
@@ -293,7 +296,36 @@ final class DotGridAnimator {
         }
     }
 
-    // MARK: - Formation (green → black + chaos → grid)
+    // MARK: - Wave Displacement (shared by formation + scanning)
+
+    /// The wave elapsed time, continuous across formation → scanning.
+    /// Starts ticking once the wave begins fading in during formation.
+    private var waveStartTime: TimeInterval = 0
+
+    private func waveDisplacement(for dot: Dot, waveElapsed: TimeInterval) -> (dx: CGFloat, dy: CGFloat, envelope: CGFloat) {
+        let waveFrontAngle: CGFloat = .pi / 6
+        let waveFrontX = config.waveSpeed * CGFloat(waveElapsed)
+
+        let projDist = dot.gridPosition.x * cos(waveFrontAngle)
+            + dot.gridPosition.y * sin(waveFrontAngle)
+        let distFromFront = projDist - waveFrontX
+
+        let waveLength: CGFloat = canvasSize.width * 1.5
+        let wrappedDist = distFromFront.truncatingRemainder(dividingBy: waveLength)
+
+        let envelopeWidth: CGFloat = 120
+        let envelope = exp(-abs(wrappedDist) / envelopeWidth)
+
+        let displacement = config.waveAmplitude * envelope *
+            sin(config.waveFrequency * projDist - CGFloat(waveElapsed) * 3)
+
+        let perpX = -sin(waveFrontAngle)
+        let perpY = cos(waveFrontAngle)
+
+        return (perpX * displacement, perpY * displacement, envelope)
+    }
+
+    // MARK: - Formation (green → black + chaos → grid + wave fade-in)
 
     private func updateFormation(time: TimeInterval, dt: TimeInterval) {
         let elapsed = time - phaseStartTime
@@ -304,91 +336,79 @@ final class DotGridAnimator {
         let bgT = min(1, elapsed / bgDuration)
         backgroundProgress = Double(easeOutCubic(bgT))
 
-        // --- Dots start moving toward grid immediately ---
-        // They're hidden behind the green overlay at first, becoming
-        // visible as the green fades. By the time green is gone the
-        // dots should be mid-way through settling into the grid.
-        for i in dots.indices {
-            // Opacity: full from the start (green overlay hides them initially)
-            dots[i].opacity = dots[i].baseOpacity
+        // --- Grid formation starts immediately ---
+        // Dots begin organizing while hidden behind the green overlay.
+        // By the time the green clears, dots are already mid-animation.
+        let gridElapsed = elapsed
 
-            // Position: smooth movement from random → grid over gridDuration
-            // starting from the very beginning of the phase
+        let waveElapsed = max(0, time - waveStartTime)
+
+        var allSettled = true
+
+        for i in dots.indices {
             let centerX = canvasSize.width / 2
             let centerY = canvasSize.height / 2
             let dx = dots[i].gridPosition.x - centerX
             let dy = dots[i].gridPosition.y - centerY
             let dist = sqrt(dx * dx + dy * dy)
             let maxDist = sqrt(centerX * centerX + centerY * centerY)
-            // Stagger: outer dots start later, spread over 0.8s
             let stagger = Double(dist / maxDist) * 0.8
 
-            let localElapsed = max(0, elapsed - stagger)
-            let localT = min(1, localElapsed / gridDuration)
-            let eased = easeOutCubic(Double(localT))
+            let localElapsed = max(0, gridElapsed - stagger)
+            let t = min(1.0, localElapsed / gridDuration)
+            let smooth = smootherStep(t)
+
+            // Base position: lerp from random → grid
+            let baseX = lerp(dots[i].randomPosition.x, dots[i].gridPosition.x, CGFloat(smooth))
+            let baseY = lerp(dots[i].randomPosition.y, dots[i].gridPosition.y, CGFloat(smooth))
+
+            // Fade wave in per-dot during the last 30% of its formation.
+            // When t < 0.7, waveWeight = 0. When t = 1.0, waveWeight = 1.0.
+            let waveWeight = CGFloat(smootherStep(max(0, min(1, (t - 0.7) / 0.3))))
+            let wave = waveDisplacement(for: dots[i], waveElapsed: waveElapsed)
 
             dots[i].position = CGPoint(
-                x: lerp(dots[i].randomPosition.x, dots[i].gridPosition.x, CGFloat(eased)),
-                y: lerp(dots[i].randomPosition.y, dots[i].gridPosition.y, CGFloat(eased))
+                x: baseX + wave.dx * waveWeight,
+                y: baseY + wave.dy * waveWeight
             )
 
-            dots[i].radius = config.dotRadius
+            // Blend opacity/radius toward scanning values as wave fades in
+            let opacityBoost = Double(wave.envelope) * 0.4 * Double(waveWeight)
+            dots[i].opacity = dots[i].baseOpacity + opacityBoost
+            dots[i].radius = config.dotRadius + CGFloat(wave.envelope) * 0.8 * waveWeight
+
+            if t < 1.0 { allSettled = false }
         }
 
-        // Auto-transition to scanning when grid formation is done
-        let totalDuration = gridDuration + 0.8 + 0.3 // gridDuration + max stagger + settle
-        if elapsed >= totalDuration {
+        // Switch to scanning bookkeeping once all dots are settled.
+        // Motion is already continuous — the wave is fully active.
+        if allSettled {
             startScanning(at: time)
         }
     }
 
-    // MARK: - Scanning (wave sweep)
+    // MARK: - Scanning (wave sweep, continues from formation)
 
     private func updateScanning(time: TimeInterval, dt: TimeInterval) {
-        let elapsed = time - phaseStartTime
-
-        // Wave front position - sweeps diagonally
-        let waveFrontX = config.waveSpeed * CGFloat(elapsed)
-        let waveFrontAngle: CGFloat = .pi / 6 // ~30° diagonal
+        // Wave time is continuous from when it started during formation
+        let waveElapsed = max(0, time - waveStartTime)
+        let scanElapsed = time - phaseStartTime
 
         for i in dots.indices {
             let dot = dots[i]
-
-            // Project dot position onto wave direction
-            let projDist = dot.gridPosition.x * cos(waveFrontAngle)
-                + dot.gridPosition.y * sin(waveFrontAngle)
-
-            // Distance from wave front along wave direction
-            let distFromFront = projDist - waveFrontX
-
-            // Wrap the wave so it repeats
-            let waveLength: CGFloat = canvasSize.width * 1.5
-            let wrappedDist = distFromFront.truncatingRemainder(dividingBy: waveLength)
-
-            // Displacement envelope: strong near front, decays quickly
-            let envelopeWidth: CGFloat = 120
-            let envelope = exp(-abs(wrappedDist) / envelopeWidth)
-
-            // Sinusoidal displacement perpendicular to wave direction
-            let displacement = config.waveAmplitude * envelope *
-                sin(config.waveFrequency * projDist - CGFloat(elapsed) * 3)
-
-            let perpX = -sin(waveFrontAngle)
-            let perpY = cos(waveFrontAngle)
+            let wave = waveDisplacement(for: dot, waveElapsed: waveElapsed)
 
             dots[i].position = CGPoint(
-                x: dot.gridPosition.x + perpX * displacement,
-                y: dot.gridPosition.y + perpY * displacement
+                x: dot.gridPosition.x + wave.dx,
+                y: dot.gridPosition.y + wave.dy
             )
 
-            // Modulate opacity with wave
-            let opacityBoost = Double(envelope) * 0.4
+            let opacityBoost = Double(wave.envelope) * 0.4
             dots[i].opacity = dot.baseOpacity + opacityBoost
-            dots[i].radius = config.dotRadius + CGFloat(envelope) * 0.8
+            dots[i].radius = config.dotRadius + CGFloat(wave.envelope) * 0.8
         }
 
-        // Update roaming dots
-        updateRoamingDots(dt: dt, elapsed: elapsed)
+        updateRoamingDots(dt: dt, elapsed: scanElapsed)
     }
 
     private func updateRoamingDots(dt: TimeInterval, elapsed: TimeInterval) {
@@ -574,5 +594,12 @@ final class DotGridAnimator {
     private func easeOutCubic(_ t: Double) -> CGFloat {
         let t = CGFloat(min(1, max(0, t)))
         return 1 - pow(1 - t, 3)
+    }
+
+    /// Perlin's smootherStep — C2 continuous. Zero velocity AND zero
+    /// acceleration at both endpoints. Reaches exactly 1.0.
+    private func smootherStep(_ t: Double) -> Double {
+        let x = max(0, min(1, t))
+        return x * x * x * (x * (x * 6 - 15) + 10)
     }
 }

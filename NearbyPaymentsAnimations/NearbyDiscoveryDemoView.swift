@@ -276,18 +276,20 @@ struct NearbyDiscoveryDemoView: View {
         ensureSetup()
         currentPhase = .scanning
         let time = Date().timeIntervalSinceReferenceDate
+        let speed = max(0.01, animator.timeScale)
         animator.reset()
         animator.startFormation(at: time)
 
         // Hide keypad, show discovery UI after a beat
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
+        // Scale delays by 1/timeScale so they match animation time
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3 / speed) { [self] in
             withAnimation(.easeInOut(duration: 0.3)) {
                 showDiscoveryUI = true
             }
         }
 
         // Show title after grid forms
-        let titleDelay = animator.config.backgroundTransitionDuration + 0.8
+        let titleDelay = (animator.config.backgroundTransitionDuration + 0.8) / speed
         DispatchQueue.main.asyncAfter(deadline: .now() + titleDelay) { [self] in
             guard currentPhase == .scanning else { return }
             withAnimation(.easeIn(duration: 0.5)) {
@@ -297,7 +299,7 @@ struct NearbyDiscoveryDemoView: View {
         }
 
         // Person found after scanning runs for a while
-        DispatchQueue.main.asyncAfter(deadline: .now() + 7.0) { [self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7.0 / speed) { [self] in
             guard currentPhase == .scanning else { return }
             goToPhase(.personFound)
         }
@@ -327,9 +329,15 @@ struct NearbyDiscoveryDemoView: View {
             }
 
         case .personFound:
-            if animator.phase != .scanning && animator.phase != .personFound {
+            // Only snap to grid if we're jumping here from idle/keypad.
+            // If still forming, let formation finish naturally first.
+            if animator.phase == .idle {
                 animator.snapToGrid()
                 animator.backgroundProgress = 1
+            } else if animator.phase == .forming {
+                // Don't snap — wait for formation to complete on its own.
+                // The animator will transition to scanning when all dots settle.
+                return
             }
             showDiscoveryUI = true
             let size = UIScreen.main.bounds.size
