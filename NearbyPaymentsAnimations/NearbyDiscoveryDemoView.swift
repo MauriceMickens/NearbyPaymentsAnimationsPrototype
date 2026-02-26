@@ -9,20 +9,21 @@ import SwiftUI
 
 /// Full-screen demo that simulates the nearby discovery animation flow.
 ///
-/// Provides controls to step through each animation phase and tune parameters.
+/// Starts with a green screen (representing Cash App). Tapping the "Nearby"
+/// button triggers the green → black transition into the dot grid animation.
 struct NearbyDiscoveryDemoView: View {
 
     @State private var animator = DotGridAnimator()
-    @State private var currentPhase: DemoPhase = .home
+    @State private var showDiscoveryUI = false
     @State private var showAvatar = false
     @State private var avatarOpacity: Double = 0
     @State private var showTitle = false
     @State private var titleText = ""
     @State private var selectedMode: NearbyMode = .pay
+    @State private var currentPhase: AnimationPhase = .keypad
 
-    enum DemoPhase: String, CaseIterable {
-        case home = "Home"
-        case forming = "Forming"
+    enum AnimationPhase: String, CaseIterable {
+        case keypad = "Keypad"
         case scanning = "Scanning"
         case personFound = "Person Found"
         case radial = "Radial"
@@ -35,52 +36,73 @@ struct NearbyDiscoveryDemoView: View {
 
     var body: some View {
         ZStack {
-            // Background
-            Color.black.ignoresSafeArea()
-
-            // Dot grid
+            // Canvas (always present — draws green bg when idle, black + dots when animating)
             DotGridCanvasView(animator: animator)
                 .ignoresSafeArea()
 
-            // Overlay UI
-            VStack(spacing: 0) {
-                // Title bar
-                if showTitle {
-                    titleBar
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-
-                Spacer()
-
-                // Avatar (for person found)
-                if showAvatar {
-                    avatarView
-                        .transition(.scale.combined(with: .opacity))
-                }
-
-                Spacer()
-
-                // Bottom bar
-                bottomBar
+            // Green keypad overlay — simple green screen with Nearby button
+            if currentPhase == .keypad {
+                keypadOverlay
+                    .opacity(animator.backgroundProgress < 0.01 ? 1 : 0)
             }
 
-            // Controls overlay
+            // Discovery UI (title bar, avatar, mode toggle)
+            if showDiscoveryUI {
+                VStack(spacing: 0) {
+                    if showTitle {
+                        discoveryTitleBar
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    Spacer()
+
+                    if showAvatar {
+                        avatarView
+                            .transition(.scale.combined(with: .opacity))
+                    }
+
+                    Spacer()
+                }
+            }
+
+            // Controls
             VStack {
                 Spacer()
                 controlsPanel
             }
         }
         .preferredColorScheme(.dark)
-        .onAppear {
-            autoPlay()
+    }
+
+    // MARK: - Green Keypad Overlay
+
+    private var keypadOverlay: some View {
+        ZStack {
+            Color(red: 0.0, green: 0.54, blue: 0.15)
+                .ignoresSafeArea()
+
+            Button(action: { startNearbyFlow() }) {
+                VStack(spacing: 8) {
+                    Image(systemName: "sensor.tag.radiowaves.forward")
+                        .font(.system(size: 32, weight: .medium))
+                    Text("Nearby")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(24)
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(.white.opacity(0.2))
+                )
+            }
         }
     }
 
-    // MARK: - Title Bar
+    // MARK: - Discovery Title Bar
 
-    private var titleBar: some View {
+    private var discoveryTitleBar: some View {
         HStack {
-            Button(action: { resetToHome() }) {
+            Button(action: { resetToKeypad() }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.white)
@@ -132,24 +154,18 @@ struct NearbyDiscoveryDemoView: View {
                 .foregroundStyle(.white)
         }
         .opacity(avatarOpacity)
-        .offset(x: 60, y: -20) // Offset from center like the design
+        .offset(x: 60, y: -20)
     }
 
-    // MARK: - Bottom Bar
+    // MARK: - Mode Toggle Bar
 
-    private var bottomBar: some View {
-        Group {
-            if currentPhase != .home {
-                HStack(spacing: 12) {
-                    modeButton(title: "Pay", mode: .pay)
-                    modeButton(title: "Get paid", mode: .getPaid)
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 16)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+    private var modeToggleBar: some View {
+        HStack(spacing: 12) {
+            modeButton(title: "Pay", mode: .pay)
+            modeButton(title: "Get paid", mode: .getPaid)
         }
-        .animation(.easeInOut(duration: 0.3), value: currentPhase)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 16)
     }
 
     private func modeButton(title: String, mode: NearbyMode) -> some View {
@@ -179,10 +195,9 @@ struct NearbyDiscoveryDemoView: View {
 
     private var controlsPanel: some View {
         VStack(spacing: 8) {
-            // Phase buttons
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(DemoPhase.allCases, id: \.self) { phase in
+                    ForEach(AnimationPhase.allCases, id: \.self) { phase in
                         Button(action: { goToPhase(phase) }) {
                             Text(phase.rawValue)
                                 .font(.system(size: 13, weight: .medium))
@@ -196,8 +211,7 @@ struct NearbyDiscoveryDemoView: View {
                         }
                     }
 
-                    // Auto play button
-                    Button(action: { autoPlay() }) {
+                    Button(action: { startNearbyFlow() }) {
                         HStack(spacing: 4) {
                             Image(systemName: "play.fill")
                                 .font(.system(size: 10))
@@ -207,15 +221,12 @@ struct NearbyDiscoveryDemoView: View {
                         .foregroundStyle(.black)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(
-                            Capsule().fill(.green)
-                        )
+                        .background(Capsule().fill(.green))
                     }
                 }
                 .padding(.horizontal, 16)
             }
 
-            // Config sliders
             HStack(spacing: 16) {
                 configSlider(label: "Dots", value: Binding(
                     get: { Double(animator.config.columns) },
@@ -231,6 +242,11 @@ struct NearbyDiscoveryDemoView: View {
                     get: { Double(animator.config.waveAmplitude) },
                     set: { animator.config.waveAmplitude = CGFloat($0) }
                 ), range: 0...20)
+
+                configSlider(label: "Speed", value: Binding(
+                    get: { animator.timeScale },
+                    set: { animator.timeScale = $0 }
+                ), range: 0.05...1.0)
             }
             .padding(.horizontal, 16)
         }
@@ -248,61 +264,78 @@ struct NearbyDiscoveryDemoView: View {
         }
     }
 
-    // MARK: - Phase Transitions
+    // MARK: - Flow Control
 
-    /// Ensure the animator has dots. GeometryReader may not have fired yet,
-    /// so we fall back to screen bounds.
     private func ensureSetup() {
         if animator.dots.isEmpty {
-            let size = UIScreen.main.bounds.size
-            animator.setup(in: size)
+            animator.setup(in: UIScreen.main.bounds.size)
         }
     }
 
-    private func goToPhase(_ phase: DemoPhase) {
-        currentPhase = phase
+    private func startNearbyFlow() {
         ensureSetup()
+        currentPhase = .scanning
+        let time = Date().timeIntervalSinceReferenceDate
+        animator.reset()
+        animator.startFormation(at: time)
+
+        // Hide keypad, show discovery UI after a beat
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
+            withAnimation(.easeInOut(duration: 0.3)) {
+                showDiscoveryUI = true
+            }
+        }
+
+        // Show title after grid forms
+        let titleDelay = animator.config.backgroundTransitionDuration + 0.8
+        DispatchQueue.main.asyncAfter(deadline: .now() + titleDelay) { [self] in
+            guard currentPhase == .scanning else { return }
+            withAnimation(.easeIn(duration: 0.5)) {
+                showTitle = true
+                titleText = "Looking for people nearby"
+            }
+        }
+
+        // Person found after scanning runs for a while
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7.0) { [self] in
+            guard currentPhase == .scanning else { return }
+            goToPhase(.personFound)
+        }
+    }
+
+    private func goToPhase(_ phase: AnimationPhase) {
+        ensureSetup()
+        currentPhase = phase
         let time = Date().timeIntervalSinceReferenceDate
 
         switch phase {
-        case .home:
-            resetToHome()
-
-        case .forming:
-            animator.reset()
-            animator.startFormation(at: time)
-            showAvatar = false
-            avatarOpacity = 0
-            // Show title after formation completes
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
-                guard currentPhase == .forming else { return }
-                withAnimation(.easeIn(duration: 0.5)) {
-                    showTitle = true
-                    titleText = "Looking for people nearby"
-                }
-            }
+        case .keypad:
+            resetToKeypad()
 
         case .scanning:
             if animator.phase != .scanning {
                 animator.snapToGrid()
+                animator.backgroundProgress = 1
                 animator.startScanning(at: time)
             }
+            showDiscoveryUI = true
+            showAvatar = false
+            avatarOpacity = 0
             withAnimation {
                 showTitle = true
                 titleText = "Looking for people nearby"
-                showAvatar = false
-                avatarOpacity = 0
             }
 
         case .personFound:
             if animator.phase != .scanning && animator.phase != .personFound {
                 animator.snapToGrid()
+                animator.backgroundProgress = 1
             }
+            showDiscoveryUI = true
             let size = UIScreen.main.bounds.size
             let personPos = CGPoint(x: size.width * 0.65, y: size.height * 0.4)
             animator.showPerson(at: personPos, time: time)
 
-            // Show avatar after dots converge
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [self] in
                 guard currentPhase == .personFound else { return }
                 withAnimation(.spring(duration: 0.4, bounce: 0.3)) {
@@ -312,10 +345,12 @@ struct NearbyDiscoveryDemoView: View {
             }
 
         case .radial:
+            showDiscoveryUI = true
             let size = UIScreen.main.bounds.size
             let center = CGPoint(x: size.width / 2, y: size.height * 0.4)
             animator.setup(in: size)
             animator.snapToGrid()
+            animator.backgroundProgress = 1
             animator.startRadialTransition(center: center, at: time)
             withAnimation(.easeIn(duration: 0.4)) {
                 showTitle = true
@@ -326,10 +361,11 @@ struct NearbyDiscoveryDemoView: View {
         }
     }
 
-    private func resetToHome() {
-        currentPhase = .home
+    private func resetToKeypad() {
+        currentPhase = .keypad
         animator.reset()
-        withAnimation {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            showDiscoveryUI = false
             showTitle = false
             showAvatar = false
             avatarOpacity = 0
@@ -337,7 +373,6 @@ struct NearbyDiscoveryDemoView: View {
     }
 
     private func handleModeChange(_ mode: NearbyMode) {
-        let time = Date().timeIntervalSinceReferenceDate
         if mode == .getPaid {
             goToPhase(.radial)
         } else {
@@ -347,20 +382,7 @@ struct NearbyDiscoveryDemoView: View {
 
     private func refreshGrid() {
         animator.setup(in: UIScreen.main.bounds.size)
-        let time = Date().timeIntervalSinceReferenceDate
         goToPhase(currentPhase)
-    }
-
-    private func autoPlay() {
-        goToPhase(.forming)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            goToPhase(.scanning)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
-            goToPhase(.personFound)
-        }
     }
 }
 
@@ -368,15 +390,4 @@ struct NearbyDiscoveryDemoView: View {
 
 #Preview("Nearby Discovery Demo") {
     NearbyDiscoveryDemoView()
-}
-
-#Preview("Scanning Only") {
-    let animator = DotGridAnimator()
-    DotGridCanvasView(animator: animator)
-        .ignoresSafeArea()
-        .onAppear {
-            animator.setup(in: UIScreen.main.bounds.size)
-            animator.snapToGrid()
-            animator.startScanning(at: Date().timeIntervalSinceReferenceDate)
-        }
 }

@@ -40,7 +40,7 @@ struct RoamingDot {
 
 enum DotGridPhase: Equatable {
     case idle
-    case forming          // Chaos → grid
+    case forming          // Green → black + chaos → grid
     case scanning         // Wave sweep + roaming dots
     case personFound      // Bright dots coalesce → avatar pop
     case radialTransition // Grid → concentric circles
@@ -57,12 +57,12 @@ final class DotGridAnimator {
     // MARK: - Configuration
 
     struct Config {
-        var columns: Int = 25
-        var rows: Int = 20
-        var dotSpacing: CGFloat = 14
-        var dotRadius: CGFloat = 1.8
-        var baseOpacity: Double = 0.35
-        var opacityVariation: Double = 0.1
+        var columns: Int = 20
+        var rows: Int = 35
+        var dotSpacing: CGFloat = 18
+        var dotRadius: CGFloat = 1.5
+        var baseOpacity: Double = 0.3
+        var opacityVariation: Double = 0.08
         /// Duration for chaos → grid formation
         var formationDuration: TimeInterval = 1.2
         /// Wave speed in points per second
@@ -73,6 +73,8 @@ final class DotGridAnimator {
         var waveFrequency: CGFloat = 0.15
         /// Number of roaming bright dots during scan
         var roamingDotCount: Int = 3
+        /// Duration for green → black background transition
+        var backgroundTransitionDuration: TimeInterval = 1.2
     }
 
     var config = Config()
@@ -82,6 +84,8 @@ final class DotGridAnimator {
     private(set) var phase: DotGridPhase = .idle
     private(set) var dots: [Dot] = []
     private(set) var roamingDots: [RoamingDot] = []
+    /// 0 = full green, 1 = full black. Read by DotGridCanvasView for background color.
+    var backgroundProgress: Double = 0
 
     /// Grid origin offset (to center the grid in the canvas)
     private var gridOrigin: CGPoint = .zero
@@ -90,8 +94,13 @@ final class DotGridAnimator {
 
     // MARK: - Timing
 
+    /// 1.0 = normal speed, 0.1 = 10× slower
+    var timeScale: Double = 1.0
+
     private var phaseStartTime: TimeInterval = 0
     private var lastUpdateTime: TimeInterval = 0
+    /// Accumulated "animation time" that respects timeScale
+    private var animationTime: TimeInterval = 0
     private var waveOrigin: CGPoint = .zero
     /// Person found position (in canvas coordinates)
     private(set) var personPosition: CGPoint = .zero
@@ -206,31 +215,37 @@ final class DotGridAnimator {
 
     func startFormation(at time: TimeInterval) {
         phase = .forming
-        phaseStartTime = time
+        phaseStartTime = animationTime
+        backgroundProgress = 0
+        // Place dots at random positions with zero opacity
+        for i in dots.indices {
+            dots[i].position = dots[i].randomPosition
+            dots[i].opacity = 0
+        }
     }
 
     func startScanning(at time: TimeInterval) {
         phase = .scanning
-        phaseStartTime = time
+        phaseStartTime = animationTime
         waveOrigin = CGPoint(x: 0, y: canvasSize.height)
     }
 
     func showPerson(at position: CGPoint, time: TimeInterval) {
         personPosition = position
-        personFoundTime = time
+        personFoundTime = animationTime
         phase = .personFound
-        phaseStartTime = time
+        phaseStartTime = animationTime
     }
 
     func startRadialTransition(center: CGPoint, at time: TimeInterval) {
         computeRadialPositions(center: center)
         phase = .radialTransition
-        phaseStartTime = time
+        phaseStartTime = animationTime
     }
 
     func startRadialPulsing(at time: TimeInterval) {
         phase = .radialPulsing
-        phaseStartTime = time
+        phaseStartTime = animationTime
     }
 
     /// Instantly snap all dots to their grid positions (useful for jumping to scanning phase)
@@ -244,6 +259,7 @@ final class DotGridAnimator {
 
     func reset() {
         phase = .idle
+        backgroundProgress = 0
         for i in dots.indices {
             dots[i].position = dots[i].randomPosition
             dots[i].opacity = 0
@@ -256,57 +272,72 @@ final class DotGridAnimator {
     // MARK: - Update (called every frame)
 
     func update(at time: TimeInterval) {
-        let dt = lastUpdateTime > 0 ? min(time - lastUpdateTime, 1.0 / 30) : 0
+        let wallDt = lastUpdateTime > 0 ? min(time - lastUpdateTime, 1.0 / 30) : 0
         lastUpdateTime = time
+        let dt = wallDt * timeScale
+        animationTime += dt
 
         switch phase {
         case .idle:
             break
         case .forming:
-            updateFormation(time: time, dt: dt)
+            updateFormation(time: animationTime, dt: dt)
         case .scanning:
-            updateScanning(time: time, dt: dt)
+            updateScanning(time: animationTime, dt: dt)
         case .personFound:
-            updatePersonFound(time: time, dt: dt)
+            updatePersonFound(time: animationTime, dt: dt)
         case .radialTransition:
-            updateRadialTransition(time: time, dt: dt)
+            updateRadialTransition(time: animationTime, dt: dt)
         case .radialPulsing:
-            updateRadialPulsing(time: time, dt: dt)
+            updateRadialPulsing(time: animationTime, dt: dt)
         }
     }
 
-    // MARK: - Formation (chaos → grid)
+    // MARK: - Formation (green → black + chaos → grid)
 
     private func updateFormation(time: TimeInterval, dt: TimeInterval) {
         let elapsed = time - phaseStartTime
-        let duration = config.formationDuration
+        let bgDuration = config.backgroundTransitionDuration
+        let gridDuration = config.formationDuration
 
+        // --- Background fade (green → black) ---
+        let bgT = min(1, elapsed / bgDuration)
+        backgroundProgress = Double(easeOutCubic(bgT))
+
+        // --- Dots start moving toward grid immediately ---
+        // They're hidden behind the green overlay at first, becoming
+        // visible as the green fades. By the time green is gone the
+        // dots should be mid-way through settling into the grid.
         for i in dots.indices {
-            // Stagger based on distance from center of grid
+            // Opacity: full from the start (green overlay hides them initially)
+            dots[i].opacity = dots[i].baseOpacity
+
+            // Position: smooth movement from random → grid over gridDuration
+            // starting from the very beginning of the phase
             let centerX = canvasSize.width / 2
             let centerY = canvasSize.height / 2
             let dx = dots[i].gridPosition.x - centerX
             let dy = dots[i].gridPosition.y - centerY
             let dist = sqrt(dx * dx + dy * dy)
             let maxDist = sqrt(centerX * centerX + centerY * centerY)
-            let stagger = Double(dist / maxDist) * 0.4
+            // Stagger: outer dots start later, spread over 0.8s
+            let stagger = Double(dist / maxDist) * 0.8
 
-            let localT = max(0, min(1, (elapsed - stagger) / (duration - stagger)))
-            let eased = easeOutSpring(localT)
+            let localElapsed = max(0, elapsed - stagger)
+            let localT = min(1, localElapsed / gridDuration)
+            let eased = easeOutCubic(Double(localT))
 
             dots[i].position = CGPoint(
-                x: lerp(dots[i].randomPosition.x, dots[i].gridPosition.x, eased),
-                y: lerp(dots[i].randomPosition.y, dots[i].gridPosition.y, eased)
+                x: lerp(dots[i].randomPosition.x, dots[i].gridPosition.x, CGFloat(eased)),
+                y: lerp(dots[i].randomPosition.y, dots[i].gridPosition.y, CGFloat(eased))
             )
 
-            // Fade in during formation
-            let opacityT = min(1, elapsed / (duration * 0.6))
-            dots[i].opacity = dots[i].baseOpacity * opacityT
             dots[i].radius = config.dotRadius
         }
 
-        // Auto-transition to scanning when done
-        if elapsed >= duration + 0.3 {
+        // Auto-transition to scanning when grid formation is done
+        let totalDuration = gridDuration + 0.8 + 0.3 // gridDuration + max stagger + settle
+        if elapsed >= totalDuration {
             startScanning(at: time)
         }
     }

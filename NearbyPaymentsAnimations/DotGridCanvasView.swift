@@ -44,6 +44,10 @@ private struct DotGridCanvas: View {
             // Advance animation
             animator.update(at: frameTime)
 
+            // -- Draw dots FIRST, then green overlay on top --
+            // This way dots are always rendered; the green layer
+            // covers them when opaque and reveals them as it fades.
+
             // -- Draw grid dots --
             for dot in animator.dots {
                 guard dot.opacity > 0.01 else { continue }
@@ -87,6 +91,19 @@ private struct DotGridCanvas: View {
                     )),
                     with: .color(.white)
                 )
+            }
+
+            // -- Draw green background overlay (fades out during transition) --
+            // Drawn last so it sits on top of dots, hiding them when opaque
+            // and progressively revealing them as it fades to transparent.
+            if animator.backgroundProgress < 0.99 {
+                let greenOpacity = 1 - animator.backgroundProgress
+                context.opacity = greenOpacity
+                context.fill(
+                    Path(CGRect(origin: .zero, size: size)),
+                    with: .color(Color(red: 0.22, green: 0.44, blue: 0.15))
+                )
+                context.opacity = 1
             }
         }
     }
