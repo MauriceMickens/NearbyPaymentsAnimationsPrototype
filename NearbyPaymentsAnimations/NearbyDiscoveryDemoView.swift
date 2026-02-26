@@ -22,7 +22,6 @@ struct NearbyDiscoveryDemoView: View {
 
     enum DemoPhase: String, CaseIterable {
         case home = "Home"
-        case transition = "Transition"
         case forming = "Forming"
         case scanning = "Scanning"
         case personFound = "Person Found"
@@ -72,6 +71,9 @@ struct NearbyDiscoveryDemoView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .onAppear {
+            autoPlay()
+        }
     }
 
     // MARK: - Title Bar
@@ -265,13 +267,6 @@ struct NearbyDiscoveryDemoView: View {
         switch phase {
         case .home:
             resetToHome()
-
-        case .transition:
-            // Just show the grid idle (dots not yet visible)
-            animator.reset()
-            showTitle = false
-            showAvatar = false
-            avatarOpacity = 0
 
         case .forming:
             animator.reset()
