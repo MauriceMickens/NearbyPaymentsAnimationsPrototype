@@ -127,11 +127,17 @@ final class DotGridAnimator {
                     y: gridOrigin.y + CGFloat(row) * config.dotSpacing
                 )
 
-                // Start near grid position with a small random offset
-                let scatter: CGFloat = 40
+                // Start off-screen: project outward from center through grid position
+                let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                let dx = gridPos.x - center.x
+                let dy = gridPos.y - center.y
+                let dist = max(1, sqrt(dx * dx + dy * dy))
+                let nx = dx / dist
+                let ny = dy / dist
+                let pushDist = max(size.width, size.height) * 0.8
                 let randomPos = CGPoint(
-                    x: gridPos.x + CGFloat.random(in: -scatter...scatter),
-                    y: gridPos.y + CGFloat.random(in: -scatter...scatter)
+                    x: gridPos.x + nx * pushDist,
+                    y: gridPos.y + ny * pushDist
                 )
 
                 let baseOpacity = config.baseOpacity +
@@ -347,24 +353,24 @@ final class DotGridAnimator {
         var allSettled = true
 
         for i in dots.indices {
+            // Stagger: edge dots arrive first, center dots last
             let centerX = canvasSize.width / 2
             let centerY = canvasSize.height / 2
             let dx = dots[i].gridPosition.x - centerX
             let dy = dots[i].gridPosition.y - centerY
             let dist = sqrt(dx * dx + dy * dy)
             let maxDist = sqrt(centerX * centerX + centerY * centerY)
-            let stagger = Double(dist / maxDist) * 0.25
+            let stagger = Double(1 - dist / maxDist) * 0.6
 
             let localElapsed = max(0, gridElapsed - stagger)
             let t = min(1.0, localElapsed / gridDuration)
             let smooth = smootherStep(t)
 
-            // Base position: lerp from random → grid
+            // Base position: lerp from off-screen → grid
             let baseX = lerp(dots[i].randomPosition.x, dots[i].gridPosition.x, CGFloat(smooth))
             let baseY = lerp(dots[i].randomPosition.y, dots[i].gridPosition.y, CGFloat(smooth))
 
             // Fade wave in per-dot during the last 30% of its formation.
-            // When t < 0.7, waveWeight = 0. When t = 1.0, waveWeight = 1.0.
             let waveWeight = CGFloat(smootherStep(max(0, min(1, (t - 0.7) / 0.3))))
             let wave = waveDisplacement(for: dots[i], waveElapsed: waveElapsed)
 
@@ -373,9 +379,11 @@ final class DotGridAnimator {
                 y: baseY + wave.dy * waveWeight
             )
 
-            // Blend opacity/radius toward scanning values as wave fades in
+            // Opacity tied to formation progress — invisible when far,
+            // visible only when close to grid position
+            let fadeIn = smootherStep(max(0, min(1, (t - 0.6) / 0.4)))
             let opacityBoost = Double(wave.envelope) * 0.4 * Double(waveWeight)
-            dots[i].opacity = dots[i].baseOpacity + opacityBoost
+            dots[i].opacity = (dots[i].baseOpacity + opacityBoost) * fadeIn
             dots[i].radius = config.dotRadius + CGFloat(wave.envelope) * 0.8 * waveWeight
 
             if t < 1.0 { allSettled = false }
