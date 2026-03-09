@@ -75,6 +75,20 @@ final class DotGridAnimator {
         var roamingDotCount: Int = 3
         /// Duration for green → black background transition
         var backgroundTransitionDuration: TimeInterval = 1.2
+
+        /// Motion style for idle/scanning animation
+        var motionStyle: MotionStyle = .wave
+        /// How fast the noise field evolves (noise mode only)
+        var noiseSpeed: Double = 0.15
+        /// Spatial frequency of noise sampling (noise mode only)
+        var noiseScale: Double = 0.05
+        /// Max displacement in points from noise (noise mode only)
+        var noiseAmplitude: CGFloat = 4
+
+        enum MotionStyle: String, CaseIterable {
+            case wave = "Wave"
+            case noise = "Noise"
+        }
     }
 
     var config = Config()
@@ -127,17 +141,14 @@ final class DotGridAnimator {
                     y: gridOrigin.y + CGFloat(row) * config.dotSpacing
                 )
 
-                // Start off-screen: project outward from center through grid position
-                let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                let dx = gridPos.x - center.x
-                let dy = gridPos.y - center.y
-                let dist = max(1, sqrt(dx * dx + dy * dy))
-                let nx = dx / dist
-                let ny = dy / dist
-                let pushDist = max(size.width, size.height) * 0.8
+                // Dots start slightly above their grid position and fall down into
+                // place, creating a top-to-bottom cascade effect. Small horizontal
+                // jitter adds organic feel without creating a swirl.
+                let verticalDrop: CGFloat = CGFloat.random(in: 12...20)
+                let horizontalJitter: CGFloat = CGFloat.random(in: -4...4)
                 let randomPos = CGPoint(
-                    x: gridPos.x + nx * pushDist,
-                    y: gridPos.y + ny * pushDist
+                    x: gridPos.x + horizontalJitter,
+                    y: gridPos.y - verticalDrop
                 )
 
                 let baseOpacity = config.baseOpacity +
@@ -332,6 +343,18 @@ final class DotGridAnimator {
         return (perpX * displacement, perpY * displacement, envelope)
     }
 
+    private func noiseDisplacement(for dot: Dot, time: TimeInterval) -> (dx: CGFloat, dy: CGFloat) {
+        let scale = Float(config.noiseScale)
+        let gx = Float(dot.gridPosition.x) * scale
+        let gy = Float(dot.gridPosition.y) * scale
+        let t = Float(time * config.noiseSpeed)
+
+        let nx = SimplexNoise.noise3D(x: gx, y: gy, z: t)
+        let ny = SimplexNoise.noise3D(x: gx + 31.7, y: gy + 47.3, z: t)
+
+        return (CGFloat(nx) * config.noiseAmplitude, CGFloat(ny) * config.noiseAmplitude)
+    }
+
     // MARK: - Formation (green → black + chaos → grid + wave fade-in)
 
     private func updateFormation(time: TimeInterval, dt: TimeInterval) {
@@ -340,8 +363,9 @@ final class DotGridAnimator {
         let gridDuration = config.formationDuration
 
         // --- Background fade (green → black) ---
+        // Linear fade so the green lingers long enough for dots to show through it.
         let bgT = min(1, elapsed / bgDuration)
-        backgroundProgress = Double(easeOutCubic(bgT))
+        backgroundProgress = bgT
 
         // --- Grid formation starts immediately ---
         // Dots begin organizing while hidden behind the green overlay.
@@ -353,14 +377,9 @@ final class DotGridAnimator {
         var allSettled = true
 
         for i in dots.indices {
-            // Stagger: edge dots arrive first, center dots last
-            let centerX = canvasSize.width / 2
-            let centerY = canvasSize.height / 2
-            let dx = dots[i].gridPosition.x - centerX
-            let dy = dots[i].gridPosition.y - centerY
-            let dist = sqrt(dx * dx + dy * dy)
-            let maxDist = sqrt(centerX * centerX + centerY * centerY)
-            let stagger = Double(1 - dist / maxDist) * 0.6
+            // Stagger: top rows arrive first, bottom rows last ("fall from sky")
+            let rowFraction = Double(dots[i].row) / Double(max(1, config.rows - 1))
+            let stagger = rowFraction * 0.8
 
             let localElapsed = max(0, gridElapsed - stagger)
             let t = min(1.0, localElapsed / gridDuration)
@@ -370,21 +389,31 @@ final class DotGridAnimator {
             let baseX = lerp(dots[i].randomPosition.x, dots[i].gridPosition.x, CGFloat(smooth))
             let baseY = lerp(dots[i].randomPosition.y, dots[i].gridPosition.y, CGFloat(smooth))
 
-            // Fade wave in per-dot during the last 30% of its formation.
-            let waveWeight = CGFloat(smootherStep(max(0, min(1, (t - 0.7) / 0.3))))
-            let wave = waveDisplacement(for: dots[i], waveElapsed: waveElapsed)
+            // Fade displacement in per-dot during the last 30% of its formation.
+            let dispWeight = CGFloat(smootherStep(max(0, min(1, (t - 0.7) / 0.3))))
+            // Linear ramp — dots reach full opacity at 40% of formation.
+            // Fast enough to be visible through the green overlay.
+            let fadeIn = min(1.0, t * 2.5)
 
-            dots[i].position = CGPoint(
-                x: baseX + wave.dx * waveWeight,
-                y: baseY + wave.dy * waveWeight
-            )
-
-            // Opacity tied to formation progress — invisible when far,
-            // visible only when close to grid position
-            let fadeIn = smootherStep(max(0, min(1, (t - 0.6) / 0.4)))
-            let opacityBoost = Double(wave.envelope) * 0.4 * Double(waveWeight)
-            dots[i].opacity = (dots[i].baseOpacity + opacityBoost) * fadeIn
-            dots[i].radius = config.dotRadius + CGFloat(wave.envelope) * 0.8 * waveWeight
+            switch config.motionStyle {
+            case .wave:
+                let wave = waveDisplacement(for: dots[i], waveElapsed: waveElapsed)
+                dots[i].position = CGPoint(
+                    x: baseX + wave.dx * dispWeight,
+                    y: baseY + wave.dy * dispWeight
+                )
+                let opacityBoost = Double(wave.envelope) * 0.4 * Double(dispWeight)
+                dots[i].opacity = (dots[i].baseOpacity + opacityBoost) * fadeIn
+                dots[i].radius = config.dotRadius + CGFloat(wave.envelope) * 0.8 * dispWeight
+            case .noise:
+                let noise = noiseDisplacement(for: dots[i], time: time)
+                dots[i].position = CGPoint(
+                    x: baseX + noise.dx * dispWeight,
+                    y: baseY + noise.dy * dispWeight
+                )
+                dots[i].opacity = dots[i].baseOpacity * fadeIn
+                dots[i].radius = config.dotRadius
+            }
 
             if t < 1.0 { allSettled = false }
         }
@@ -399,22 +428,33 @@ final class DotGridAnimator {
     // MARK: - Scanning (wave sweep, continues from formation)
 
     private func updateScanning(time: TimeInterval, dt: TimeInterval) {
-        // Wave time is continuous from when it started during formation
-        let waveElapsed = max(0, time - waveStartTime)
         let scanElapsed = time - phaseStartTime
 
-        for i in dots.indices {
-            let dot = dots[i]
-            let wave = waveDisplacement(for: dot, waveElapsed: waveElapsed)
-
-            dots[i].position = CGPoint(
-                x: dot.gridPosition.x + wave.dx,
-                y: dot.gridPosition.y + wave.dy
-            )
-
-            let opacityBoost = Double(wave.envelope) * 0.4
-            dots[i].opacity = dot.baseOpacity + opacityBoost
-            dots[i].radius = config.dotRadius + CGFloat(wave.envelope) * 0.8
+        switch config.motionStyle {
+        case .wave:
+            let waveElapsed = max(0, time - waveStartTime)
+            for i in dots.indices {
+                let dot = dots[i]
+                let wave = waveDisplacement(for: dot, waveElapsed: waveElapsed)
+                dots[i].position = CGPoint(
+                    x: dot.gridPosition.x + wave.dx,
+                    y: dot.gridPosition.y + wave.dy
+                )
+                let opacityBoost = Double(wave.envelope) * 0.4
+                dots[i].opacity = dot.baseOpacity + opacityBoost
+                dots[i].radius = config.dotRadius + CGFloat(wave.envelope) * 0.8
+            }
+        case .noise:
+            for i in dots.indices {
+                let dot = dots[i]
+                let noise = noiseDisplacement(for: dot, time: time)
+                dots[i].position = CGPoint(
+                    x: dot.gridPosition.x + noise.dx,
+                    y: dot.gridPosition.y + noise.dy
+                )
+                dots[i].opacity = dot.baseOpacity
+                dots[i].radius = config.dotRadius
+            }
         }
 
         updateRoamingDots(dt: dt, elapsed: scanElapsed)
@@ -611,4 +651,96 @@ final class DotGridAnimator {
         let x = max(0, min(1, t))
         return x * x * x * (x * (x * 6 - 15) + 10)
     }
+}
+
+// MARK: - Simplex Noise
+
+/// Minimal 3D simplex noise for dot grid drift animation.
+enum SimplexNoise {
+
+    static func noise3D(x: Float, y: Float, z: Float) -> Float {
+        let F3: Float = 1.0 / 3.0
+        let G3: Float = 1.0 / 6.0
+
+        let s = (x + y + z) * F3
+        let i = Int32(floor(x + s))
+        let j = Int32(floor(y + s))
+        let k = Int32(floor(z + s))
+
+        let t = Float(i + j + k) * G3
+        let x0 = x - (Float(i) - t)
+        let y0 = y - (Float(j) - t)
+        let z0 = z - (Float(k) - t)
+
+        let (i1, j1, k1, i2, j2, k2): (Int32, Int32, Int32, Int32, Int32, Int32)
+        if x0 >= y0 {
+            if y0 >= z0      { (i1,j1,k1,i2,j2,k2) = (1,0,0,1,1,0) }
+            else if x0 >= z0 { (i1,j1,k1,i2,j2,k2) = (1,0,0,1,0,1) }
+            else              { (i1,j1,k1,i2,j2,k2) = (0,0,1,1,0,1) }
+        } else {
+            if y0 < z0       { (i1,j1,k1,i2,j2,k2) = (0,0,1,0,1,1) }
+            else if x0 < z0  { (i1,j1,k1,i2,j2,k2) = (0,1,0,0,1,1) }
+            else              { (i1,j1,k1,i2,j2,k2) = (0,1,0,1,1,0) }
+        }
+
+        let x1 = x0 - Float(i1) + G3
+        let y1 = y0 - Float(j1) + G3
+        let z1 = z0 - Float(k1) + G3
+        let x2 = x0 - Float(i2) + 2.0 * G3
+        let y2 = y0 - Float(j2) + 2.0 * G3
+        let z2 = z0 - Float(k2) + 2.0 * G3
+        let x3 = x0 - 1.0 + 3.0 * G3
+        let y3 = y0 - 1.0 + 3.0 * G3
+        let z3 = z0 - 1.0 + 3.0 * G3
+
+        let ii = Int(i & 255)
+        let jj = Int(j & 255)
+        let kk = Int(k & 255)
+
+        let gi0 = Self.perm[ii +       Self.perm[jj +       Self.perm[kk]]] % 12
+        let gi1 = Self.perm[ii + Int(i1) + Self.perm[jj + Int(j1) + Self.perm[kk + Int(k1)]]] % 12
+        let gi2 = Self.perm[ii + Int(i2) + Self.perm[jj + Int(j2) + Self.perm[kk + Int(k2)]]] % 12
+        let gi3 = Self.perm[ii + 1 +    Self.perm[jj + 1 +    Self.perm[kk + 1]]] % 12
+
+        return 32.0 * (contrib(gi0, x0, y0, z0) +
+                        contrib(gi1, x1, y1, z1) +
+                        contrib(gi2, x2, y2, z2) +
+                        contrib(gi3, x3, y3, z3))
+    }
+
+    private static func contrib(_ gi: Int, _ x: Float, _ y: Float, _ z: Float) -> Float {
+        let t = 0.6 - x * x - y * y - z * z
+        guard t > 0 else { return 0 }
+        let t2 = t * t
+        let g = grad3[gi]
+        return t2 * t2 * (g.0 * x + g.1 * y + g.2 * z)
+    }
+
+    private static let grad3: [(Float, Float, Float)] = [
+        (1,1,0),(-1,1,0),(1,-1,0),(-1,-1,0),
+        (1,0,1),(-1,0,1),(1,0,-1),(-1,0,-1),
+        (0,1,1),(0,-1,1),(0,1,-1),(0,-1,-1)
+    ]
+
+    private static let perm: [Int] = {
+        let p: [Int] = [
+            151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,
+            140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,
+            247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,
+            57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,
+            74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,
+            60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,
+            65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,
+            200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,
+            52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,
+            207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,
+            119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,
+            129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,
+            218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,
+            81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,
+            184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,
+            222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180
+        ]
+        return p + p
+    }()
 }

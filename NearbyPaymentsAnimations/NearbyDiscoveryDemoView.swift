@@ -21,6 +21,7 @@ struct NearbyDiscoveryDemoView: View {
     @State private var titleText = ""
     @State private var selectedMode: NearbyMode = .pay
     @State private var currentPhase: AnimationPhase = .keypad
+    @State private var motionStyle: DotGridAnimator.Config.MotionStyle = .wave
 
     enum AnimationPhase: String, CaseIterable {
         case keypad = "Keypad"
@@ -70,6 +71,9 @@ struct NearbyDiscoveryDemoView: View {
                 Spacer()
                 controlsPanel
             }
+        }
+        .onChange(of: motionStyle) { _, newValue in
+            animator.config.motionStyle = newValue
         }
         .preferredColorScheme(.dark)
     }
@@ -227,6 +231,14 @@ struct NearbyDiscoveryDemoView: View {
                 .padding(.horizontal, 16)
             }
 
+            Picker("Motion", selection: $motionStyle) {
+                ForEach(DotGridAnimator.Config.MotionStyle.allCases, id: \.self) { style in
+                    Text(style.rawValue).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+
             HStack(spacing: 16) {
                 configSlider(label: "Dots", value: Binding(
                     get: { Double(animator.config.columns) },
@@ -238,10 +250,17 @@ struct NearbyDiscoveryDemoView: View {
                     set: { animator.config.dotSpacing = CGFloat($0); refreshGrid() }
                 ), range: 8...24)
 
-                configSlider(label: "Wave", value: Binding(
-                    get: { Double(animator.config.waveAmplitude) },
-                    set: { animator.config.waveAmplitude = CGFloat($0) }
-                ), range: 0...20)
+                if motionStyle == .wave {
+                    configSlider(label: "Wave", value: Binding(
+                        get: { Double(animator.config.waveAmplitude) },
+                        set: { animator.config.waveAmplitude = CGFloat($0) }
+                    ), range: 0...20)
+                } else {
+                    configSlider(label: "Drift", value: Binding(
+                        get: { Double(animator.config.noiseAmplitude) },
+                        set: { animator.config.noiseAmplitude = CGFloat($0) }
+                    ), range: 0...10)
+                }
 
                 configSlider(label: "Speed", value: Binding(
                     get: { animator.timeScale },
