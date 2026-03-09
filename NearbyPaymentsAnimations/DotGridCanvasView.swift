@@ -57,19 +57,65 @@ private struct DotGridCanvas: View {
                 context.opacity = 1
             }
 
-            // -- Draw grid dots --
+            // -- Draw grid dots (with chromatic aberration from search circle) --
             for dot in animator.dots {
                 guard dot.opacity > 0.01 else { continue }
-                context.opacity = dot.opacity
-                context.fill(
-                    Path(ellipseIn: CGRect(
-                        x: dot.position.x - dot.radius,
-                        y: dot.position.y - dot.radius,
-                        width: dot.radius * 2,
-                        height: dot.radius * 2
-                    )),
-                    with: .color(.white)
-                )
+
+                let caIntensity = dot.chaserIntensity * 0.3 // subtle on scanning
+                if caIntensity > 0.05 {
+                    // Chromatic aberration: offset R, G, B channels
+                    let caOffset = caIntensity * 3.5
+                    let r = dot.radius
+
+                    context.blendMode = .plusLighter
+
+                    // Red channel - offset upper-left
+                    context.opacity = dot.opacity * 0.7
+                    context.fill(
+                        Path(ellipseIn: CGRect(
+                            x: dot.position.x - r - caOffset,
+                            y: dot.position.y - r - caOffset * 0.3,
+                            width: r * 2, height: r * 2
+                        )),
+                        with: .color(Color(red: 1.0, green: 0.24, blue: 0.24))
+                    )
+
+                    // Green channel - center
+                    context.opacity = dot.opacity * 0.7
+                    context.fill(
+                        Path(ellipseIn: CGRect(
+                            x: dot.position.x - r,
+                            y: dot.position.y - r + caOffset * 0.2,
+                            width: r * 2, height: r * 2
+                        )),
+                        with: .color(Color(red: 0.24, green: 1.0, blue: 0.24))
+                    )
+
+                    // Blue channel - offset lower-right
+                    context.opacity = dot.opacity * 0.7
+                    context.fill(
+                        Path(ellipseIn: CGRect(
+                            x: dot.position.x - r + caOffset,
+                            y: dot.position.y - r + caOffset * 0.3,
+                            width: r * 2, height: r * 2
+                        )),
+                        with: .color(Color(red: 0.24, green: 0.24, blue: 1.0))
+                    )
+
+                    context.blendMode = .normal
+                } else {
+                    // Normal white dot
+                    context.opacity = dot.opacity
+                    context.fill(
+                        Path(ellipseIn: CGRect(
+                            x: dot.position.x - dot.radius,
+                            y: dot.position.y - dot.radius,
+                            width: dot.radius * 2,
+                            height: dot.radius * 2
+                        )),
+                        with: .color(.white)
+                    )
+                }
             }
 
             // -- Draw roaming dots (brighter, with glow) --

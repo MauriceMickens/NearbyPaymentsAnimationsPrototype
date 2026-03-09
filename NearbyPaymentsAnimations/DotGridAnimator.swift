@@ -25,6 +25,10 @@ struct Dot {
     /// Row/column index in the grid
     var row: Int
     var col: Int
+    /// Random stagger delay for formation (0-1), per web implementation
+    var zRainDelay: Double = 0
+    /// Search circle trailing chromatic aberration intensity (0-1)
+    var chaserIntensity: Double = 0
 }
 
 /// A bright dot that roams independently during scanning
@@ -34,6 +38,21 @@ struct RoamingDot {
     var opacity: Double
     var radius: Double
     var target: CGPoint
+}
+
+/// Wandering search circle that displaces nearby dots (ported from web)
+struct SearchCircle {
+    var x: CGFloat = 0
+    var y: CGFloat = 0
+    var vx: CGFloat = 0
+    var vy: CGFloat = 0
+    /// Four phase angles for multi-sine chaotic wandering
+    var phaseA: CGFloat = CGFloat.random(in: 0...(2 * .pi))
+    var phaseB: CGFloat = CGFloat.random(in: 0...(2 * .pi))
+    var phaseC: CGFloat = CGFloat.random(in: 0...(2 * .pi))
+    var phaseD: CGFloat = CGFloat.random(in: 0...(2 * .pi))
+    var frozen: Bool = false
+    var initialized: Bool = false
 }
 
 // MARK: - Animation Phase
@@ -98,6 +117,12 @@ final class DotGridAnimator {
     private(set) var phase: DotGridPhase = .idle
     private(set) var dots: [Dot] = []
     private(set) var roamingDots: [RoamingDot] = []
+    /// Wandering search circle (displaces nearby dots during scanning)
+    private(set) var searchCircle = SearchCircle()
+    /// Search circle visual radius
+    let searchRadius: CGFloat = 12
+    /// How far the search circle affects nearby dots
+    var searchInfluence: CGFloat { searchRadius * 3.5 }
     /// 0 = full green, 1 = full black. Read by DotGridCanvasView for background color.
     var backgroundProgress: Double = 0
 
@@ -141,28 +166,21 @@ final class DotGridAnimator {
                     y: gridOrigin.y + CGFloat(row) * config.dotSpacing
                 )
 
-                // Dots start slightly above their grid position and fall down into
-                // place, creating a top-to-bottom cascade effect. Small horizontal
-                // jitter adds organic feel without creating a swirl.
-                let verticalDrop: CGFloat = CGFloat.random(in: 12...20)
-                let horizontalJitter: CGFloat = CGFloat.random(in: -4...4)
-                let randomPos = CGPoint(
-                    x: gridPos.x + horizontalJitter,
-                    y: gridPos.y - verticalDrop
-                )
-
+                // Web-style: dots start at grid position. Formation displacement
+                // (center-outward push) is computed dynamically during updateFormation.
                 let baseOpacity = config.baseOpacity +
                     Double.random(in: -config.opacityVariation...config.opacityVariation)
 
                 dots.append(Dot(
-                    position: randomPos,
+                    position: gridPos,
                     gridPosition: gridPos,
-                    randomPosition: randomPos,
+                    randomPosition: gridPos,
                     opacity: 0,
                     radius: config.dotRadius,
                     baseOpacity: max(0.1, baseOpacity),
                     row: row,
-                    col: col
+                    col: col,
+                    zRainDelay: Double.random(in: 0...1.0)
                 ))
             }
         }
@@ -355,106 +373,178 @@ final class DotGridAnimator {
         return (CGFloat(nx) * config.noiseAmplitude, CGFloat(ny) * config.noiseAmplitude)
     }
 
-    // MARK: - Formation (green → black + chaos → grid + wave fade-in)
+    // MARK: - Formation (web-style: center-outward push + per-dot random stagger)
 
     private func updateFormation(time: TimeInterval, dt: TimeInterval) {
         let elapsed = time - phaseStartTime
         let bgDuration = config.backgroundTransitionDuration
-        let gridDuration = config.formationDuration
 
         // --- Background fade (green → black) ---
-        // Linear fade so the green lingers long enough for dots to show through it.
         let bgT = min(1, elapsed / bgDuration)
         backgroundProgress = bgT
 
-        // --- Grid formation starts immediately ---
-        // Dots begin organizing while hidden behind the green overlay.
-        // By the time the green clears, dots are already mid-animation.
-        let gridElapsed = elapsed
+        // --- Web-style formation ---
+        // fadeInProgress ramps 0→1 over 2.5s, mapped to 0→3 virtual time units.
+        // Per-dot zRainDelay (0-1) staggers when each dot starts animating.
+        let fadeInDuration: TimeInterval = 2.5
+        let fadeInProgress = min(1.0, elapsed / fadeInDuration)
+        let introTime = fadeInProgress * 3.0
 
-        let waveElapsed = max(0, time - waveStartTime)
+        let cx = canvasSize.width / 2
+        let cy = canvasSize.height / 2
+        let maxDist = max(1, sqrt(cx * cx + cy * cy))
 
         var allSettled = true
 
         for i in dots.indices {
-            // Stagger: top rows arrive first, bottom rows last ("fall from sky")
-            let rowFraction = Double(dots[i].row) / Double(max(1, config.rows - 1))
-            let stagger = rowFraction * 0.8
+            let dot = dots[i]
+            let delayed = max(0, introTime - dot.zRainDelay)
 
-            let localElapsed = max(0, gridElapsed - stagger)
-            let t = min(1.0, localElapsed / gridDuration)
-            let smooth = smootherStep(t)
+            // Opacity: fast (0.5 virtual time units → ~0.42s real)
+            let tAlpha = min(1.0, delayed / 0.5)
+            let easeAlpha = smoothStep(tAlpha)
 
-            // Base position: lerp from off-screen → grid
-            let baseX = lerp(dots[i].randomPosition.x, dots[i].gridPosition.x, CGFloat(smooth))
-            let baseY = lerp(dots[i].randomPosition.y, dots[i].gridPosition.y, CGFloat(smooth))
+            // Slide: slower (1.3 virtual time units → ~1.08s real)
+            let tSlide = min(1.0, delayed / 1.3)
+            let easeSlide = smoothStep(tSlide)
 
-            // Fade displacement in per-dot during the last 30% of its formation.
-            let dispWeight = CGFloat(smootherStep(max(0, min(1, (t - 0.7) / 0.3))))
-            // Linear ramp — dots reach full opacity at 40% of formation.
-            // Fast enough to be visible through the green overlay.
-            let fadeIn = min(1.0, t * 2.5)
+            // Push dots outward from center, proportional to distance
+            let dx = dot.gridPosition.x - cx
+            let dy = dot.gridPosition.y - cy
+            let dist = sqrt(dx * dx + dy * dy)
+            let distRatio = CGFloat(dist / maxDist)
+            let push = distRatio * 156 * (1 - CGFloat(easeSlide))
 
-            switch config.motionStyle {
-            case .wave:
-                let wave = waveDisplacement(for: dots[i], waveElapsed: waveElapsed)
+            if dist > 0 {
                 dots[i].position = CGPoint(
-                    x: baseX + wave.dx * dispWeight,
-                    y: baseY + wave.dy * dispWeight
+                    x: dot.gridPosition.x + (dx / dist) * push,
+                    y: dot.gridPosition.y + (dy / dist) * push
                 )
-                let opacityBoost = Double(wave.envelope) * 0.4 * Double(dispWeight)
-                dots[i].opacity = (dots[i].baseOpacity + opacityBoost) * fadeIn
-                dots[i].radius = config.dotRadius + CGFloat(wave.envelope) * 0.8 * dispWeight
-            case .noise:
-                let noise = noiseDisplacement(for: dots[i], time: time)
-                dots[i].position = CGPoint(
-                    x: baseX + noise.dx * dispWeight,
-                    y: baseY + noise.dy * dispWeight
-                )
-                dots[i].opacity = dots[i].baseOpacity * fadeIn
-                dots[i].radius = config.dotRadius
+            } else {
+                dots[i].position = dot.gridPosition
             }
 
-            if t < 1.0 { allSettled = false }
+            dots[i].opacity = dot.baseOpacity * easeAlpha
+            dots[i].radius = config.dotRadius
+
+            if tSlide < 1.0 || tAlpha < 1.0 { allSettled = false }
         }
 
-        // Switch to scanning bookkeeping once all dots are settled.
-        // Motion is already continuous — the wave is fully active.
         if allSettled {
             startScanning(at: time)
         }
     }
 
-    // MARK: - Scanning (wave sweep, continues from formation)
+    // MARK: - Search Circle (wandering chaser, ported from web)
+
+    private func updateSearchCircle(dt: TimeInterval) {
+        guard !searchCircle.frozen else { return }
+
+        let cx = canvasSize.width / 2
+        let cy = canvasSize.height / 2
+
+        if !searchCircle.initialized {
+            searchCircle.x = cx
+            searchCircle.y = cy
+            searchCircle.initialized = true
+        }
+
+        // Advance phase angles for chaotic wandering
+        let wanderSpeed: CGFloat = 0.012
+        let dtf = CGFloat(dt * 60) // normalize to 60fps frame units
+
+        searchCircle.phaseA += wanderSpeed * 1.0 * dtf
+        searchCircle.phaseB += wanderSpeed * 1.7 * dtf
+        searchCircle.phaseC += wanderSpeed * 0.6 * dtf
+        searchCircle.phaseD += wanderSpeed * 2.3 * dtf
+
+        // Combine multiple sine waves for chaotic (non-straight-line) motion
+        let rangeX = canvasSize.width * 0.42
+        let rangeY = canvasSize.height * 0.42
+
+        let targetX = cx
+            + sin(searchCircle.phaseA) * rangeX * 0.6
+            + sin(searchCircle.phaseB * 1.3 + 0.7) * rangeX * 0.3
+            + cos(searchCircle.phaseC * 0.8 + 2.1) * rangeX * 0.15
+        let targetY = cy
+            + cos(searchCircle.phaseA * 0.9 + 1.2) * rangeY * 0.5
+            + sin(searchCircle.phaseD * 1.1 + 0.4) * rangeY * 0.35
+            + cos(searchCircle.phaseB * 0.7 + 3.0) * rangeY * 0.15
+
+        // Spring tracking toward wander target
+        let springK: CGFloat = 6.0
+        let damp: CGFloat = 0.82
+        let dtCG = CGFloat(dt)
+
+        searchCircle.vx += (targetX - searchCircle.x) * springK * dtCG
+        searchCircle.vy += (targetY - searchCircle.y) * springK * dtCG
+        searchCircle.vx *= damp
+        searchCircle.vy *= damp
+        searchCircle.x += searchCircle.vx * dtf
+        searchCircle.y += searchCircle.vy * dtf
+
+        // Clamp inside canvas bounds with padding
+        let pad = searchRadius + 10
+        searchCircle.x = max(pad, min(canvasSize.width - pad, searchCircle.x))
+        searchCircle.y = max(pad, min(canvasSize.height - pad, searchCircle.y))
+    }
+
+    // MARK: - Scanning (search circle + optional wave/noise displacement)
 
     private func updateScanning(time: TimeInterval, dt: TimeInterval) {
         let scanElapsed = time - phaseStartTime
 
-        switch config.motionStyle {
-        case .wave:
-            let waveElapsed = max(0, time - waveStartTime)
-            for i in dots.indices {
-                let dot = dots[i]
+        // Update wandering search circle
+        updateSearchCircle(dt: dt)
+
+        let influence = searchInfluence
+
+        for i in dots.indices {
+            let dot = dots[i]
+
+            var targetX = dot.gridPosition.x
+            var targetY = dot.gridPosition.y
+            var scanElevation: CGFloat = 0
+
+            // Search circle proximity: push dots upward with bell-curve falloff
+            let dxSc = dot.gridPosition.x - searchCircle.x
+            let dySc = dot.gridPosition.y - searchCircle.y
+            let distFromCircle = sqrt(dxSc * dxSc + dySc * dySc)
+
+            if distFromCircle < influence {
+                let proximity = 1 - distFromCircle / influence
+                let bell = CGFloat(smoothStep(Double(proximity)))
+                scanElevation = bell
+                // Push dot upward (negative Y = up) to simulate Z lift
+                targetY -= bell * 12
+                // Track chaser intensity for chromatic aberration
+                dots[i].chaserIntensity = max(dots[i].chaserIntensity, Double(bell))
+            }
+
+            // Decay chaser intensity (~1s to fully fade)
+            if dots[i].chaserIntensity > 0 {
+                dots[i].chaserIntensity = max(0, dots[i].chaserIntensity - dt * 1.0)
+            }
+
+            // Apply wave/noise displacement on top of search circle effect
+            switch config.motionStyle {
+            case .wave:
+                let waveElapsed = max(0, time - waveStartTime)
                 let wave = waveDisplacement(for: dot, waveElapsed: waveElapsed)
-                dots[i].position = CGPoint(
-                    x: dot.gridPosition.x + wave.dx,
-                    y: dot.gridPosition.y + wave.dy
-                )
+                targetX += wave.dx
+                targetY += wave.dy
                 let opacityBoost = Double(wave.envelope) * 0.4
-                dots[i].opacity = dot.baseOpacity + opacityBoost
-                dots[i].radius = config.dotRadius + CGFloat(wave.envelope) * 0.8
-            }
-        case .noise:
-            for i in dots.indices {
-                let dot = dots[i]
+                dots[i].opacity = min(1, dot.baseOpacity + opacityBoost + Double(scanElevation) * 0.65)
+                dots[i].radius = config.dotRadius * (1 + scanElevation * 0.8) + CGFloat(wave.envelope) * 0.8
+            case .noise:
                 let noise = noiseDisplacement(for: dot, time: time)
-                dots[i].position = CGPoint(
-                    x: dot.gridPosition.x + noise.dx,
-                    y: dot.gridPosition.y + noise.dy
-                )
-                dots[i].opacity = dot.baseOpacity
-                dots[i].radius = config.dotRadius
+                targetX += noise.dx
+                targetY += noise.dy
+                dots[i].opacity = min(1, dot.baseOpacity + Double(scanElevation) * 0.65)
+                dots[i].radius = config.dotRadius * (1 + scanElevation * 0.8)
             }
+
+            dots[i].position = CGPoint(x: targetX, y: targetY)
         }
 
         updateRoamingDots(dt: dt, elapsed: scanElapsed)
@@ -494,17 +584,14 @@ final class DotGridAnimator {
         }
     }
 
-    // MARK: - Person Found
+    // MARK: - Person Found (web-style: frozen circle repulsion with cosine falloff)
 
     private func updatePersonFound(time: TimeInterval, dt: TimeInterval) {
         let elapsed = time - phaseStartTime
 
-        // Phase 1 (0-0.6s): Roaming dots converge toward person position
-        // Phase 2 (0.6-1.0s): Grid dots displace outward from person, avatar appears
-
         let convergeEnd: TimeInterval = 0.6
 
-        // Converge roaming dots
+        // Converge roaming dots toward person position
         for i in roamingDots.indices {
             let t = min(1, elapsed / convergeEnd)
             let eased = easeOutCubic(t)
@@ -514,38 +601,51 @@ final class DotGridAnimator {
             )
 
             if elapsed > convergeEnd {
-                // Fade out roaming dots after convergence
                 let fadeT = min(1, (elapsed - convergeEnd) / 0.3)
                 roamingDots[i].opacity = max(0, 0.9 * (1 - fadeT))
             }
         }
 
-        // Grid dots: displace away from person position
+        // Frozen circle grows at person position (web-style repulsion)
+        let circleRadius: CGFloat = 22
+        let influenceR = circleRadius * 3.0
+        let growT = min(1.0, elapsed / 0.3)
+        let currentRadius = circleRadius * CGFloat(smoothStep(growT))
+        let circleOpacity = CGFloat(min(1, elapsed * 3))
+
         for i in dots.indices {
             let dx = dots[i].gridPosition.x - personPosition.x
             let dy = dots[i].gridPosition.y - personPosition.y
             let dist = sqrt(dx * dx + dy * dy)
 
-            let displacementRadius: CGFloat = 50
-            let displacementStrength: CGFloat = 15
+            if dist < influenceR && dist > 0.1 {
+                let normDx = dx / dist
+                let normDy = dy / dist
 
-            if dist < displacementRadius && dist > 0 {
-                let pushT = min(1, CGFloat(max(0, elapsed - convergeEnd)) / 0.4)
-                let eased = easeOutCubic(Double(pushT))
-                let pushAmount = displacementStrength * (1 - dist / displacementRadius) * CGFloat(eased)
-                let nx = dx / dist
-                let ny = dy / dist
+                // Web-style repulsion: strong inside circle, cosine falloff outside
+                let pushStrength: CGFloat
+                if dist < currentRadius {
+                    pushStrength = (influenceR - dist) * 1.5
+                } else {
+                    let t = (dist - currentRadius) / (influenceR - currentRadius)
+                    let falloff = 0.5 * (1 + cos(t * .pi))
+                    pushStrength = falloff * currentRadius * 0.8
+                }
 
                 dots[i].position = CGPoint(
-                    x: dots[i].gridPosition.x + nx * pushAmount,
-                    y: dots[i].gridPosition.y + ny * pushAmount
+                    x: dots[i].gridPosition.x + normDx * pushStrength * circleOpacity,
+                    y: dots[i].gridPosition.y + normDy * pushStrength * circleOpacity
                 )
             } else {
-                // Settle back to grid
                 dots[i].position = CGPoint(
                     x: lerp(dots[i].position.x, dots[i].gridPosition.x, CGFloat(dt) * 4),
                     y: lerp(dots[i].position.y, dots[i].gridPosition.y, CGFloat(dt) * 4)
                 )
+            }
+
+            // Decay chaser intensity during person found phase
+            if dots[i].chaserIntensity > 0 {
+                dots[i].chaserIntensity = max(0, dots[i].chaserIntensity - dt * 2.0)
             }
 
             dots[i].opacity = dots[i].baseOpacity
@@ -643,6 +743,12 @@ final class DotGridAnimator {
     private func easeOutCubic(_ t: Double) -> CGFloat {
         let t = CGFloat(min(1, max(0, t)))
         return 1 - pow(1 - t, 3)
+    }
+
+    /// Hermite smoothStep — C1 continuous (3t²-2t³). Used by web version.
+    private func smoothStep(_ t: Double) -> Double {
+        let x = max(0, min(1, t))
+        return x * x * (3 - 2 * x)
     }
 
     /// Perlin's smootherStep — C2 continuous. Zero velocity AND zero
