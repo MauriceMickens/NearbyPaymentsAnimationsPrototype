@@ -47,7 +47,7 @@ struct NearbyDiscoveryDemoView: View {
                     .opacity(animator.backgroundProgress < 0.01 ? 1 : 0)
             }
 
-            // Discovery UI (title bar, avatar, mode toggle)
+            // Discovery UI (title bar)
             if showDiscoveryUI {
                 VStack(spacing: 0) {
                     if showTitle {
@@ -56,15 +56,20 @@ struct NearbyDiscoveryDemoView: View {
                     }
 
                     Spacer()
-
-                    if showAvatar {
-                        avatarView
-                            .transition(.scale.combined(with: .opacity))
-                    }
-
-                    Spacer()
                 }
             }
+
+            // Avatar — positioned at the search circle's frozen location
+            // Always in the view tree; animated with opacity + scale for smoothness.
+            GeometryReader { _ in
+                avatarView
+                    .position(x: animator.personPosition.x, y: animator.personPosition.y)
+                    .scaleEffect(showAvatar ? 1.0 : 0.5)
+                    .opacity(showAvatar ? 1.0 : 0)
+                    .animation(.easeInOut(duration: 0.5), value: showAvatar)
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
 
             // Controls
             VStack {
@@ -157,8 +162,6 @@ struct NearbyDiscoveryDemoView: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.white)
         }
-        .opacity(avatarOpacity)
-        .offset(x: 60, y: -20)
     }
 
     // MARK: - Mode Toggle Bar
@@ -359,16 +362,14 @@ struct NearbyDiscoveryDemoView: View {
                 return
             }
             showDiscoveryUI = true
-            let size = UIScreen.main.bounds.size
-            let personPos = CGPoint(x: size.width * 0.65, y: size.height * 0.4)
+            // Use the search circle's current position — avatar appears where the chaser is
+            let personPos = CGPoint(x: animator.searchCircle.x, y: animator.searchCircle.y)
             animator.showPerson(at: personPos, time: time)
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [self] in
+            // Avatar appears quickly after chaser freezes (matching web's 200ms)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
                 guard currentPhase == .personFound else { return }
-                withAnimation(.spring(duration: 0.4, bounce: 0.3)) {
-                    showAvatar = true
-                    avatarOpacity = 1
-                }
+                showAvatar = true
             }
 
         case .radial:

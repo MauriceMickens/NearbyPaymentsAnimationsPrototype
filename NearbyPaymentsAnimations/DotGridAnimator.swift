@@ -125,6 +125,10 @@ final class DotGridAnimator {
     var searchInfluence: CGFloat { searchRadius * 3.5 }
     /// 0 = full green, 1 = full black. Read by DotGridCanvasView for background color.
     var backgroundProgress: Double = 0
+    /// Frozen circle state for person found (exponential lerp each frame)
+    private var frozenCircleRadius: CGFloat = 0
+    private var frozenCircleOpacity: CGFloat = 0
+    private let frozenCircleTargetRadius: CGFloat = 28
 
     /// Grid origin offset (to center the grid in the canvas)
     private var gridOrigin: CGPoint = .zero
@@ -278,6 +282,9 @@ final class DotGridAnimator {
         personFoundTime = animationTime
         phase = .personFound
         phaseStartTime = animationTime
+        // Reset frozen circle — will grow via exponential lerp each frame
+        frozenCircleRadius = 0
+        frozenCircleOpacity = 0
         // Hide roaming dots — search circle handles scanning visuals now
         for i in roamingDots.indices {
             roamingDots[i].opacity = 0
@@ -580,35 +587,37 @@ final class DotGridAnimator {
     private func updatePersonFound(time: TimeInterval, dt: TimeInterval) {
         let elapsed = time - phaseStartTime
 
-        // Frozen circle grows at person position (web-style repulsion)
-        let circleRadius: CGFloat = 22
-        let influenceR = circleRadius * 3.0
-        let growT = min(1.0, elapsed / 0.3)
-        let currentRadius = circleRadius * CGFloat(smoothStep(growT))
-        let circleOpacity = CGFloat(min(1, elapsed * 3))
+        // Frozen circle grows via exponential lerp (matching web animation)
+        // Circle starts growing after 200ms delay, matching avatar appearance
+        if elapsed > 0.2 {
+            frozenCircleRadius += (frozenCircleTargetRadius - frozenCircleRadius) * CGFloat(dt) * 5
+            frozenCircleOpacity = min(1, frozenCircleOpacity + CGFloat(dt) * 3)
+        }
+
+        let influenceR = frozenCircleTargetRadius * 3.0
 
         for i in dots.indices {
             let dx = dots[i].gridPosition.x - personPosition.x
             let dy = dots[i].gridPosition.y - personPosition.y
             let dist = sqrt(dx * dx + dy * dy)
 
-            if dist < influenceR && dist > 0.1 {
+            if dist < influenceR && dist > 0.1 && frozenCircleRadius > 0.5 {
                 let normDx = dx / dist
                 let normDy = dy / dist
 
                 // Web-style repulsion: strong inside circle, cosine falloff outside
                 let pushStrength: CGFloat
-                if dist < currentRadius {
+                if dist < frozenCircleRadius {
                     pushStrength = (influenceR - dist) * 1.5
                 } else {
-                    let t = (dist - currentRadius) / (influenceR - currentRadius)
+                    let t = (dist - frozenCircleRadius) / max(1, influenceR - frozenCircleRadius)
                     let falloff = 0.5 * (1 + cos(t * .pi))
-                    pushStrength = falloff * currentRadius * 0.8
+                    pushStrength = falloff * frozenCircleRadius * 0.8
                 }
 
                 dots[i].position = CGPoint(
-                    x: dots[i].gridPosition.x + normDx * pushStrength * circleOpacity,
-                    y: dots[i].gridPosition.y + normDy * pushStrength * circleOpacity
+                    x: dots[i].gridPosition.x + normDx * pushStrength * frozenCircleOpacity,
+                    y: dots[i].gridPosition.y + normDy * pushStrength * frozenCircleOpacity
                 )
             } else {
                 dots[i].position = CGPoint(
