@@ -267,6 +267,10 @@ final class DotGridAnimator {
         phase = .scanning
         phaseStartTime = animationTime
         waveOrigin = CGPoint(x: 0, y: canvasSize.height)
+        // Hide roaming dots — search circle handles scanning visuals
+        for i in roamingDots.indices {
+            roamingDots[i].opacity = 0
+        }
     }
 
     func showPerson(at position: CGPoint, time: TimeInterval) {
@@ -274,6 +278,10 @@ final class DotGridAnimator {
         personFoundTime = animationTime
         phase = .personFound
         phaseStartTime = animationTime
+        // Hide roaming dots — search circle handles scanning visuals now
+        for i in roamingDots.indices {
+            roamingDots[i].opacity = 0
+        }
     }
 
     func startRadialTransition(center: CGPoint, at time: TimeInterval) {
@@ -526,28 +534,11 @@ final class DotGridAnimator {
                 dots[i].chaserIntensity = max(0, dots[i].chaserIntensity - dt * 1.0)
             }
 
-            // Apply wave/noise displacement on top of search circle effect
-            switch config.motionStyle {
-            case .wave:
-                let waveElapsed = max(0, time - waveStartTime)
-                let wave = waveDisplacement(for: dot, waveElapsed: waveElapsed)
-                targetX += wave.dx
-                targetY += wave.dy
-                let opacityBoost = Double(wave.envelope) * 0.4
-                dots[i].opacity = min(1, dot.baseOpacity + opacityBoost + Double(scanElevation) * 0.65)
-                dots[i].radius = config.dotRadius * (1 + scanElevation * 0.8) + CGFloat(wave.envelope) * 0.8
-            case .noise:
-                let noise = noiseDisplacement(for: dot, time: time)
-                targetX += noise.dx
-                targetY += noise.dy
-                dots[i].opacity = min(1, dot.baseOpacity + Double(scanElevation) * 0.65)
-                dots[i].radius = config.dotRadius * (1 + scanElevation * 0.8)
-            }
-
+            // Web-style: dots are stationary. Only the search circle displaces them.
+            dots[i].opacity = min(1, dot.baseOpacity + Double(scanElevation) * 0.65)
+            dots[i].radius = config.dotRadius * (1 + scanElevation * 0.8)
             dots[i].position = CGPoint(x: targetX, y: targetY)
         }
-
-        updateRoamingDots(dt: dt, elapsed: scanElapsed)
     }
 
     private func updateRoamingDots(dt: TimeInterval, elapsed: TimeInterval) {
@@ -588,23 +579,6 @@ final class DotGridAnimator {
 
     private func updatePersonFound(time: TimeInterval, dt: TimeInterval) {
         let elapsed = time - phaseStartTime
-
-        let convergeEnd: TimeInterval = 0.6
-
-        // Converge roaming dots toward person position
-        for i in roamingDots.indices {
-            let t = min(1, elapsed / convergeEnd)
-            let eased = easeOutCubic(t)
-            roamingDots[i].position = CGPoint(
-                x: lerp(roamingDots[i].position.x, personPosition.x, eased * CGFloat(dt) * 5),
-                y: lerp(roamingDots[i].position.y, personPosition.y, eased * CGFloat(dt) * 5)
-            )
-
-            if elapsed > convergeEnd {
-                let fadeT = min(1, (elapsed - convergeEnd) / 0.3)
-                roamingDots[i].opacity = max(0, 0.9 * (1 - fadeT))
-            }
-        }
 
         // Frozen circle grows at person position (web-style repulsion)
         let circleRadius: CGFloat = 22
