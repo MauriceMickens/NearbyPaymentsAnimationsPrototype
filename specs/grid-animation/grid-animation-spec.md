@@ -103,14 +103,14 @@ Dots animate from grid positions to concentric ring positions around the screen 
 
 Dots are **stationary** at their ring positions. No breathing displacement. Visual movement comes from opacity-only concentric waves.
 
-**Base opacity**: 0.35 (higher than scanning's 0.30)
+**Base opacity**: 0.42 (higher than scanning's 0.30)
 
 **Concentric opacity waves** (no displacement, no size change):
 - Wave speed: 100pt/s, spawned every 2.0s
 - Wave width: 50pt
 - Multiple simultaneous waves (new one spawned while previous still fading)
 - Each wave fades over 5s: `fade = max(0, 1 - waveAge / 5)`
-- Dot opacity: `0.35 + waveAlphaBoost × 0.55` — waves brighten dots from 0.35 up to 0.90
+- Dot opacity: `0.42 + waveAlphaBoost × 0.48` — waves brighten dots from 0.42 up to 0.90
 
 **Pay flow** (triggered one-shot sequence in Get Paid mode):
 
@@ -185,3 +185,11 @@ An alternative motion mode using 3D simplex noise for organic drift:
 | frozenCircleTargetRadius | 28pt | Person found repulsion size |
 | waveAmplitude | 6pt | Wave mode displacement |
 | noiseAmplitude | 4pt | Noise mode displacement |
+| avatarRadius | 28pt | Inner ring radius (broadcast) |
+| maxVisibleRadius | 165pt | Outer visible ring radius |
+| visibleRingCount | 9 | Number of visible concentric rings |
+| broadcastBaseOpacity | 0.42 | Radiate phase base opacity |
+| waveSpeed (radiate) | 100pt/s | Concentric wave travel speed |
+| waveInterval | 2.0s | Time between new wave spawns |
+| waveWidth | 50pt | Width of each concentric wave |
+| collapseDuration | 2.0s | Grid → rings collapse duration |

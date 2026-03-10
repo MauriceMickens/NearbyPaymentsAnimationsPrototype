@@ -61,16 +61,19 @@ animationTime += dt
 
 ```swift
 struct Dot {
-    var position: CGPoint       // Current rendered position
-    var gridPosition: CGPoint   // Resting grid position
-    var randomPosition: CGPoint // Start position (currently same as grid)
-    var radialPosition: CGPoint // Target for radial layout
-    var opacity: Double         // Current opacity (0-1)
-    var radius: Double          // Current radius in points
-    var baseOpacity: Double     // Resting opacity (0.22-0.38)
-    var row: Int, col: Int      // Grid indices
-    var zRainDelay: Double      // Random formation stagger (0-1)
-    var chaserIntensity: Double // Chromatic aberration intensity (0-1)
+    var position: CGPoint        // Current rendered position
+    var gridPosition: CGPoint    // Resting grid position
+    var randomPosition: CGPoint  // Start position (currently same as grid)
+    var radialPosition: CGPoint  // Target for radial layout
+    var opacity: Double          // Current opacity (0-1)
+    var radius: Double           // Current radius in points
+    var baseOpacity: Double      // Resting opacity (0.22-0.38)
+    var row: Int, col: Int       // Grid indices
+    var zRainDelay: Double       // Random formation stagger (0-1)
+    var chaserIntensity: Double  // Chromatic aberration intensity (0-1)
+    var ringIndex: Int           // Ring assignment for radial layout (-1 = unassigned)
+    var scatterAngle: Double     // Random scatter direction for collapse (0-2π)
+    var scatterMagnitude: Double // Random scatter distance for collapse (20-60pt)
 }
 ```
 
@@ -117,9 +120,44 @@ frozenCircleRadius += (targetRadius - frozenCircleRadius) * dt * 5
 frozenCircleOpacity = min(1, frozenCircleOpacity + dt * 3)
 ```
 
-### Radial Transition
+### Radial Transition (Broadcast Collapse)
 
-Driven by `updateRadialTransition(time:dt:)`. Pre-computes ring positions in `computeRadialPositions(center:)`. Dots lerp from grid to ring positions with spring easing and distance-based stagger.
+Driven by `updateRadialTransition(time:dt:)`. Pre-computes ring positions in `computeRadialPositions(center:)`.
+
+**Ring layout**: 9 visible rings from avatarRadius (28pt) to maxVisibleRadius (165pt). Dots distributed by ring circumference at 15pt arc-length spacing. Overflow rings fade over 3 rings: `max(0, 1 - overflowRing / 3)`.
+
+**Collapse animation**:
+```swift
+let ease = (1 - cos(t * .pi)) * 0.5  // sine ease, NOT spring
+let scatter = sin(t * .pi)            // peaks at midpoint
+position = lerp(gridPosition, radialPosition, ease) + scatterOffset * scatter
+```
+
+- Duration: 2.0s with per-particle tiny delay (`zRainDelay × 0.05s`)
+- Per-particle scatter: random angle (0–2π) and magnitude (20–60pt) assigned at setup
+- Overflow opacity fades in during collapse: `1 - (1 - slotOpacity) × ease`
+
+Each `Dot` has additional fields for radial layout:
+```swift
+var ringIndex: Int        // Which ring this dot belongs to (-1 if unassigned)
+var scatterAngle: Double  // Random scatter direction (0-2π)
+var scatterMagnitude: Double // Random scatter distance (20-60pt)
+```
+
+### Radial Pulsing (Radiate)
+
+Driven by `updateRadialPulsing(time:dt:)`. Dots are **stationary** at their ring positions — no breathing, no displacement. Visual movement is opacity-only concentric waves.
+
+**Opacity waves**: Multiple simultaneous wave fronts, spawned every 2.0s, traveling at 100pt/s with 50pt width. Each wave fades over 5s. Opacity formula:
+```swift
+let alpha = (0.42 + waveAlphaBoost * 0.48) * broadcastFade
+```
+
+**Pay wave**: Triggered by `triggerPayWave()`. Two simultaneous effects:
+1. **Traveling circle**: Moves from bottom (70% screen height) upward to radial center over 1.32s with smoothstep easing. Push radius: 34pt × 3, force: `proximity² × 60pt`.
+2. **Expanding ring**: From pay avatar position, radius 16→1000pt over 2.97s. Stroke width 20–30pt, pushes nearby dots by up to 12pt.
+
+Pay wave intensity drives dot size scaling (up to 1.5×) and chromatic aberration. Deactivates after 3s.
 
 ## Chromatic Aberration Rendering
 
@@ -142,7 +180,7 @@ The avatar is a SwiftUI view positioned in screen coordinates (matching the Canv
 ```swift
 GeometryReader { _ in
     avatarView
-        .position(x: animator.personPosition.x, y: animator.personPosition.y)
+        .position(x: avatarX, y: avatarY)
         .scaleEffect(showAvatar ? 1.0 : 0.5)
         .opacity(showAvatar ? 1.0 : 0)
         .animation(.easeInOut(duration: 0.5), value: showAvatar)
@@ -150,7 +188,27 @@ GeometryReader { _ in
 .ignoresSafeArea()  // Critical: matches Canvas screen-space coordinates
 ```
 
+**Position depends on phase**:
+- **Person Found**: positioned at `animator.personPosition` (search circle's frozen position)
+- **Radial (Get Paid)**: positioned at screen center (`width/2, height/2`), appears 2100ms after collapse starts, 48×48pt with no name label
+
 The `.ignoresSafeArea()` is necessary because the Canvas ignores safe area, so its coordinate space is the full screen. Without it, the avatar would be offset by the safe area top inset (~59pt on iPhones with Dynamic Island).
+
+## Pay Flow UI
+
+The pay flow is orchestrated by `NearbyDiscoveryDemoView.handlePay()` with SwiftUI overlays:
+
+| Delay | Element | Animation |
+|-------|---------|-----------|
+| 0ms | Payer avatar (48px circle) slides up 30pt from bottom | 400ms ease-in-out |
+| 250ms | `triggerPayWave()` fires dot-based pay wave | — |
+| 1800ms | Payment notification banner slides down from top | Spring, 400ms |
+| 3500ms | Payer avatar fades out | — |
+| 5800ms | Notification auto-dismisses (slides up) | — |
+
+**Payer avatar**: Circle with person icon at bottom of screen, transitions with offset + opacity.
+
+**Notification banner**: iOS-style rounded rect pinned to top via `VStack + Spacer + .padding(.top, 54)`. Slides from above screen edge with spring animation.
 
 ## Noise Implementation
 
@@ -166,6 +224,7 @@ The `.ignoresSafeArea()` is necessary because the Canvas ignores safe area, so i
 
 - **Phase buttons**: Jump directly to any phase (Keypad, Scanning, Person Found, Radial)
 - **Auto button**: Run the full flow with timed transitions
+- **Mode toggle**: Pay / Get Paid mode selector (visible during scanning and radial phases)
 - **Motion picker**: Toggle between Wave and Noise modes
 - **Sliders**: Dots (columns), Space (spacing), Wave/Drift amplitude, Speed (timeScale)
 
