@@ -23,6 +23,10 @@ struct NearbyDiscoveryDemoView: View {
     @State private var currentPhase: AnimationPhase = .keypad
     @State private var motionStyle: DotGridAnimator.Config.MotionStyle = .wave
 
+    // Pay flow state
+    @State private var showPayerAvatar = false
+    @State private var showPaymentNotification = false
+
     enum AnimationPhase: String, CaseIterable {
         case keypad = "Keypad"
         case scanning = "Scanning"
@@ -76,6 +80,31 @@ struct NearbyDiscoveryDemoView: View {
                     .animation(.easeInOut(duration: 0.5), value: showAvatar)
             }
             .ignoresSafeArea()
+            .allowsHitTesting(false)
+
+            // Payer avatar — slides up from bottom when someone pays in Get Paid mode
+            VStack {
+                Spacer()
+                payerAvatarView
+                    .offset(y: showPayerAvatar ? 0 : 30)
+                    .opacity(showPayerAvatar ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.4), value: showPayerAvatar)
+                    .padding(.bottom, 80)
+            }
+            .allowsHitTesting(false)
+
+            // Payment notification — pinned to top, slides down from above screen
+            VStack {
+                paymentNotificationBanner
+                    .offset(y: showPaymentNotification ? 0 : -160)
+                    .opacity(showPaymentNotification ? 1 : 0)
+                    .animation(
+                        .spring(duration: 0.4, bounce: 0.15),
+                        value: showPaymentNotification
+                    )
+                Spacer()
+            }
+            .padding(.top, 54)
             .allowsHitTesting(false)
 
             // Controls
@@ -173,6 +202,69 @@ struct NearbyDiscoveryDemoView: View {
         }
     }
 
+    // MARK: - Payer Avatar (appears at bottom when someone pays)
+
+    private var payerAvatarView: some View {
+        VStack(spacing: 6) {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [.gray.opacity(0.5), .gray.opacity(0.25)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 48, height: 48)
+                .overlay(
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.white.opacity(0.7))
+                )
+                .overlay(
+                    Circle().stroke(.white.opacity(0.25), lineWidth: 1.5)
+                )
+        }
+    }
+
+    // MARK: - Payment Notification Banner
+
+    private var paymentNotificationBanner: some View {
+        HStack(spacing: 12) {
+            // Cash App icon
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(red: 0, green: 0.8, blue: 0.1))
+                .frame(width: 40, height: 40)
+                .overlay(
+                    Text("$")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(.white)
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Payment received")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.black)
+                Text("Elisa W. paid you $25.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Text("now")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(.regularMaterial)
+                .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+        )
+        .padding(.horizontal, 8)
+    }
+
     // MARK: - Mode Toggle Bar
 
     private var modeToggleBar: some View {
@@ -240,7 +332,7 @@ struct NearbyDiscoveryDemoView: View {
                         .background(Capsule().fill(.green))
                     }
 
-                    Button(action: { animator.triggerPayWave() }) {
+                    Button(action: { handlePay() }) {
                         HStack(spacing: 4) {
                             Image(systemName: "wave.3.forward")
                                 .font(.system(size: 10))
@@ -426,6 +518,8 @@ struct NearbyDiscoveryDemoView: View {
     private func resetToKeypad() {
         currentPhase = .keypad
         animator.reset()
+        showPayerAvatar = false
+        showPaymentNotification = false
         withAnimation(.easeInOut(duration: 0.3)) {
             showDiscoveryUI = false
             showTitle = false
@@ -439,6 +533,34 @@ struct NearbyDiscoveryDemoView: View {
             goToPhase(.radial)
         } else {
             goToPhase(.scanning)
+        }
+    }
+
+    /// Trigger the pay flow: payer avatar slides up → pay wave → notification
+    private func handlePay() {
+        guard currentPhase == .radial else { return }
+
+        // Step 1: Show payer avatar at bottom
+        showPayerAvatar = true
+
+        // Step 2: Fire pay wave after 250ms (avatar slides in first)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
+            animator.triggerPayWave()
+        }
+
+        // Step 3: Show payment notification after 1800ms
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in
+            showPaymentNotification = true
+        }
+
+        // Step 4: Auto-dismiss notification after 4s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.8) { [self] in
+            showPaymentNotification = false
+        }
+
+        // Step 5: Hide payer avatar after wave completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [self] in
+            showPayerAvatar = false
         }
     }
 

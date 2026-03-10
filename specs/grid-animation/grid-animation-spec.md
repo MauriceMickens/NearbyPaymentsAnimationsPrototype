@@ -112,7 +112,16 @@ Dots are **stationary** at their ring positions. No breathing displacement. Visu
 - Each wave fades over 5s: `fade = max(0, 1 - waveAge / 5)`
 - Dot opacity: `0.35 + waveAlphaBoost × 0.55` — waves brighten dots from 0.35 up to 0.90
 
-**Pay wave effect** (triggered one-shot, matches web):
+**Pay flow** (triggered one-shot sequence in Get Paid mode):
+
+Timeline:
+1. **0ms**: Payer avatar (48px circle) slides up 30px and fades in at bottom of screen (400ms ease-in-out)
+2. **250ms**: Pay wave fires (see below)
+3. **1800ms**: iOS-style notification banner slides down from top: "Payment received — Elisa W. paid you $25." (spring animation, 400ms)
+4. **3500ms**: Payer avatar fades out
+5. **5800ms**: Notification auto-dismisses (slides back up)
+
+**Pay wave effect** (dot-based animation, matches web):
 - Traveling circle: moves from pay avatar position (bottom, ~70% screen height) **upward** to radial center over 1.32s
   - Push radius: 34pt × 3 = 102pt, push force: `proximity² × 60pt`
   - Uses smoothstep easing for travel
