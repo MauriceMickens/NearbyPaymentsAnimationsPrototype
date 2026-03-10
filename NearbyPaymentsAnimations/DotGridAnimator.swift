@@ -29,6 +29,12 @@ struct Dot {
     var zRainDelay: Double = 0
     /// Search circle trailing chromatic aberration intensity (0-1)
     var chaserIntensity: Double = 0
+    /// Which concentric ring this dot belongs to (-1 = overflow/off-screen)
+    var ringIndex: Int = -1
+    /// Random scatter angle for broadcast collapse midpoint
+    var scatterAngle: CGFloat = 0
+    /// Random scatter magnitude for broadcast collapse midpoint
+    var scatterMagnitude: CGFloat = 0
 }
 
 /// A bright dot that roams independently during scanning
@@ -38,6 +44,27 @@ struct RoamingDot {
     var opacity: Double
     var radius: Double
     var target: CGPoint
+}
+
+/// Expanding concentric wave ring visual during radial pulsing
+struct WaveFront {
+    var radius: CGFloat
+    var opacity: CGFloat = 1.0
+}
+
+/// Pay wave effect: traveling orb + expanding ring displacement
+struct PayWave {
+    var active: Bool = false
+    /// Distance of the orb from center
+    var orbDistance: CGFloat = 0
+    /// Direction angle of the orb (radians)
+    var orbAngle: CGFloat = 0
+    /// Expanding ring radius (follows behind orb)
+    var ringRadius: CGFloat = 0
+    /// Ring visual opacity
+    var ringOpacity: CGFloat = 1.0
+    /// Animation start time
+    var startTime: TimeInterval = 0
 }
 
 /// Wandering search circle that displaces nearby dots (ported from web)
@@ -130,6 +157,17 @@ final class DotGridAnimator {
     private var frozenCircleOpacity: CGFloat = 0
     private let frozenCircleTargetRadius: CGFloat = 28
 
+    /// Active concentric wave fronts radiating outward during pulsing
+    private(set) var waveFronts: [WaveFront] = []
+    /// Pay wave effect state
+    private(set) var payWave = PayWave()
+    /// Maximum ring index that's fully visible on screen
+    private(set) var maxVisibleRing: Int = 0
+    /// Time of last wave front spawn
+    private var lastWaveFrontTime: TimeInterval = 0
+    /// Center point for radial layout (stored for pay wave and wave fronts)
+    private(set) var radialCenter: CGPoint = .zero
+
     /// Grid origin offset (to center the grid in the canvas)
     private var gridOrigin: CGPoint = .zero
     /// Canvas size
@@ -192,40 +230,61 @@ final class DotGridAnimator {
         setupRoamingDots()
     }
 
-    /// Compute radial positions for each dot (for Get Paid mode)
+    /// Compute radial positions for each dot (for Get Paid mode).
+    /// Matches web prototype: 9 visible rings, avatarRadius=28, maxVisible=165,
+    /// overflow rings fade over 3 rings. No per-ring rotation offset.
     func computeRadialPositions(center: CGPoint) {
-        let maxRadius = min(canvasSize.width, canvasSize.height) * 0.42
-        let ringSpacing: CGFloat = config.dotSpacing * 1.1
-        let ringCount = Int(maxRadius / ringSpacing)
-        let innerRadius: CGFloat = 35 // Gap for avatar
+        radialCenter = center
+        let avatarRadius: CGFloat = 28       // Just outside the 48px avatar
+        let maxVisibleRadius: CGFloat = 165  // 9 visible rings go up to here
+        let numVisibleRings = 9
+        let visibleRingStep = (maxVisibleRadius - avatarRadius) / CGFloat(numVisibleRings)
+        let dotSpacing: CGFloat = 15         // Arc-length between dots on each ring
 
-        // Distribute dots across rings
-        var dotIndex = 0
-        for ring in 0..<ringCount {
-            let radius = innerRadius + CGFloat(ring) * ringSpacing
+        maxVisibleRing = numVisibleRings - 1
+
+        var targets: [(angle: CGFloat, radius: CGFloat, ringIndex: Int, opacity: Double)] = []
+
+        // Build the 9 visible rings (opacity = 1)
+        for r in 0..<numVisibleRings {
+            let radius = avatarRadius + CGFloat(r + 1) * visibleRingStep
             let circumference = 2 * .pi * radius
-            let dotsInRing = max(6, Int(circumference / (config.dotSpacing * 0.9)))
-
-            for i in 0..<dotsInRing {
-                guard dotIndex < dots.count else { return }
-                let angle = (2 * .pi * CGFloat(i) / CGFloat(dotsInRing))
-                    + CGFloat(ring) * 0.15 // Slight rotation offset per ring
-                let pos = CGPoint(
-                    x: center.x + radius * cos(angle),
-                    y: center.y + radius * sin(angle)
-                )
-                dots[dotIndex].radialPosition = pos
-                dotIndex += 1
+            let count = max(6, Int(circumference / dotSpacing))
+            for s in 0..<count {
+                let angle = CGFloat(s) / CGFloat(count) * 2 * .pi
+                targets.append((angle, radius, r, 1.0))
             }
         }
 
-        // Any remaining dots go to random positions off-screen
-        while dotIndex < dots.count {
-            dots[dotIndex].radialPosition = CGPoint(
-                x: CGFloat.random(in: -50...(-20)),
-                y: CGFloat.random(in: -50...(-20))
+        // Add overflow rings beyond the visible ones until we cover all particles
+        let overflowRingStep = visibleRingStep
+        var overflowRing = 0
+        while targets.count < dots.count {
+            overflowRing += 1
+            let radius = maxVisibleRadius + CGFloat(overflowRing) * overflowRingStep
+            let circumference = 2 * .pi * radius
+            let count = max(6, Int(circumference / dotSpacing))
+            let fadeT = min(1.0, Double(overflowRing) / 3.0)
+            let ringOpacity = max(0.0, 1.0 - fadeT)
+            for s in 0..<count {
+                guard targets.count < dots.count else { break }
+                let angle = CGFloat(s) / CGFloat(count) * 2 * .pi
+                targets.append((angle, radius, numVisibleRings + overflowRing, ringOpacity))
+            }
+        }
+
+        // Assign positions + scatter values to dots
+        for i in dots.indices {
+            let slot = targets[i % targets.count]
+            dots[i].radialPosition = CGPoint(
+                x: center.x + slot.radius * cos(slot.angle),
+                y: center.y + slot.radius * sin(slot.angle)
             )
-            dotIndex += 1
+            dots[i].ringIndex = slot.ringIndex
+            dots[i].baseOpacity = slot.opacity > 0 ? 0.35 : 0 // Broadcast base opacity
+            // Random scatter for broadcast collapse (web: ±60 range)
+            dots[i].scatterAngle = CGFloat.random(in: 0...(2 * .pi))
+            dots[i].scatterMagnitude = CGFloat.random(in: 20...60)
         }
     }
 
@@ -295,11 +354,14 @@ final class DotGridAnimator {
         computeRadialPositions(center: center)
         phase = .radialTransition
         phaseStartTime = animationTime
+        waveFronts = []
+        payWave.active = false
     }
 
     func startRadialPulsing(at time: TimeInterval) {
         phase = .radialPulsing
         phaseStartTime = animationTime
+        lastWaveFrontTime = animationTime
     }
 
     /// Instantly snap all dots to their grid positions (useful for jumping to scanning phase)
@@ -636,41 +698,45 @@ final class DotGridAnimator {
         }
     }
 
-    // MARK: - Radial Transition (grid → circles)
+    // MARK: - Radial Transition (broadcast collapse, matches web prototype)
 
     private func updateRadialTransition(time: TimeInterval, dt: TimeInterval) {
         let elapsed = time - phaseStartTime
-        let duration: TimeInterval = 1.4
-
-        let t = min(1, elapsed / duration)
+        let duration: TimeInterval = 2.0
 
         for i in dots.indices {
             let dot = dots[i]
 
-            // Stagger by distance from center
-            let center = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
-            let dx = dot.gridPosition.x - center.x
-            let dy = dot.gridPosition.y - center.y
-            let dist = sqrt(dx * dx + dy * dy)
-            let maxDist = sqrt(center.x * center.x + center.y * center.y)
-            let stagger = Double(dist / maxDist) * 0.4
-
-            let localT = max(0, min(1, (t * duration - stagger * duration) / (duration * 0.6)))
-            let eased = easeOutSpring(localT)
+            // Per-particle tiny delay (web: transDelay * 0.05)
+            let delayed = max(0, elapsed - dot.zRainDelay * 0.05)
+            let t = min(1.0, delayed / duration)
+            // Sine-based ease-in-out (matching web)
+            let ease = CGFloat((1 - cos(t * .pi)) * 0.5)
 
             let fromPos = dot.gridPosition
             let toPos = dot.radialPosition
 
+            // Per-particle scatter: peaks at midpoint via sin(t*π)
+            let scatterEnvelope = sin(CGFloat(t) * .pi)
+            let scatterX = cos(dot.scatterAngle) * dot.scatterMagnitude * scatterEnvelope
+            let scatterY = sin(dot.scatterAngle) * dot.scatterMagnitude * scatterEnvelope
+
+            let baseX = lerp(fromPos.x, toPos.x, ease)
+            let baseY = lerp(fromPos.y, toPos.y, ease)
+
             dots[i].position = CGPoint(
-                x: lerp(fromPos.x, toPos.x, eased),
-                y: lerp(fromPos.y, toPos.y, eased)
+                x: baseX + scatterX,
+                y: baseY + scatterY
             )
 
-            dots[i].opacity = dot.baseOpacity
+            // Overflow opacity: gradually apply slot opacity during ease
+            // Web: slotOpacity = 1 - (1 - slot.opacity) * ease
+            let slotOpacity = 1.0 - (1.0 - dot.baseOpacity) * Double(ease)
+            dots[i].opacity = 0.35 * slotOpacity
             dots[i].radius = config.dotRadius
         }
 
-        if elapsed >= duration + 0.2 {
+        if elapsed >= duration + 0.1 {
             startRadialPulsing(at: time)
         }
     }
@@ -679,33 +745,144 @@ final class DotGridAnimator {
 
     private func updateRadialPulsing(time: TimeInterval, dt: TimeInterval) {
         let elapsed = time - phaseStartTime
-        let center = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+
+        // Advance pay wave if active
+        if payWave.active {
+            updatePayWave(time: time, dt: dt)
+        }
+
+        // Web-style: dots are stationary at ring positions.
+        // Visual movement comes from opacity-only concentric waves.
+        let waveSpeed: CGFloat = 100       // pt/s
+        let waveInterval: TimeInterval = 2.0
+        let waveWidth: CGFloat = 50
+        let numWaves = Int(elapsed / waveInterval) + 1
 
         for i in dots.indices {
             let dot = dots[i]
-            let dx = dot.radialPosition.x - center.x
-            let dy = dot.radialPosition.y - center.y
+            var posX = dot.radialPosition.x
+            var posY = dot.radialPosition.y
+            let dx = posX - radialCenter.x
+            let dy = posY - radialCenter.y
             let dist = sqrt(dx * dx + dy * dy)
 
-            // Gentle breathing/pulsing
-            let pulsePhase = CGFloat(elapsed) * 1.5 - dist * 0.01
-            let pulseAmount: CGFloat = 3 * sin(pulsePhase)
-
-            if dist > 0 {
-                let nx = dx / dist
-                let ny = dy / dist
-                dots[i].position = CGPoint(
-                    x: dot.radialPosition.x + nx * pulseAmount,
-                    y: dot.radialPosition.y + ny * pulseAmount
-                )
-            } else {
-                dots[i].position = dot.radialPosition
+            // Concentric opacity waves (no displacement)
+            var waveAlphaBoost: Double = 0
+            for w in 0..<numWaves {
+                let waveAge = elapsed - Double(w) * waveInterval
+                guard waveAge >= 0 else { continue }
+                let waveFront = CGFloat(waveAge) * waveSpeed
+                let distFromWave = abs(dist - waveFront)
+                if distFromWave < waveWidth {
+                    let strength = Double(1 - distFromWave / waveWidth)
+                    let fade = max(0, 1 - waveAge / 5.0)
+                    waveAlphaBoost = max(waveAlphaBoost, strength * fade)
+                }
             }
 
-            // Subtle opacity wave radiating outward
-            let opacityPulse = 0.1 * sin(Double(pulsePhase))
-            dots[i].opacity = dot.baseOpacity + opacityPulse
-            dots[i].radius = config.dotRadius
+            // Pay wave: traveling circle + expanding ring displacement
+            var payWaveIntensity: CGFloat = 0
+            if payWave.active {
+                let pwElapsed = time - payWave.startTime
+                let pwCx = radialCenter.x
+                let pwStartY = canvasSize.height * 0.7  // Pay avatar position (bottom area)
+                let pwEndY = radialCenter.y              // Circle center
+                let travelDist = pwStartY - pwEndY
+                let travelDuration: TimeInterval = 1.32
+                let circleRadius: CGFloat = 34
+
+                let beforeX = posX
+                let beforeY = posY
+
+                // Effect 1: Circle traveling upward
+                if pwElapsed < travelDuration {
+                    let t = CGFloat(pwElapsed / travelDuration)
+                    let ease = t * t * (3 - 2 * t)
+                    let ballY = pwStartY - travelDist * ease
+                    let pdx = posX - pwCx
+                    let pdy = posY - ballY
+                    let pDist = sqrt(pdx * pdx + pdy * pdy)
+                    if pDist < circleRadius * 3 && pDist > 0.1 {
+                        let proximity = 1 - pDist / (circleRadius * 3)
+                        let pushForce = proximity * proximity * 60
+                        let nx = pdx / pDist
+                        let ny = pdy / pDist
+                        posX += nx * pushForce
+                        posY += ny * pushForce * 0.3
+                    }
+                }
+
+                // Effect 2: Expanding ring from pay avatar position
+                let ringDuration: TimeInterval = 2.97
+                if pwElapsed < ringDuration {
+                    let t = CGFloat(pwElapsed / ringDuration)
+                    let ease = 1 - (1 - t) * (1 - t) // ease-out
+                    let ringRadius = 16 + ease * 984
+                    let ringStroke: CGFloat = 20 + (1 - t) * 10
+                    let rdx = posX - pwCx
+                    let rdy = posY - pwStartY
+                    let rDist = sqrt(rdx * rdx + rdy * rdy)
+                    let distFromRing = abs(rDist - ringRadius)
+                    if distFromRing < ringStroke && rDist > 0.1 {
+                        let ringStrength = 1 - distFromRing / ringStroke
+                        let fade = max(0, 1 - t)
+                        let push = ringStrength * fade * 12
+                        let nx = rdx / rDist
+                        let ny = rdy / rDist
+                        posX += nx * push
+                        posY += ny * push
+                    }
+                }
+
+                let totalDisp = sqrt(pow(posX - beforeX, 2) + pow(posY - beforeY, 2))
+                payWaveIntensity = min(1, totalDisp / 30)
+            }
+
+            dots[i].position = CGPoint(x: posX, y: posY)
+
+            // Opacity: broadcast base 0.42 + wave alpha boost up to 0.48
+            let broadcastFade = dot.baseOpacity > 0 ? 1.0 : 0.0
+            let alpha = (0.42 + waveAlphaBoost * 0.48) * broadcastFade
+            dots[i].opacity = min(1, alpha)
+
+            // Size: pay wave scales up to 1.5×
+            let waveScale = 1 + payWaveIntensity * 0.5
+            dots[i].radius = config.dotRadius * waveScale
+
+            // Chromatic aberration from pay wave
+            dots[i].chaserIntensity = Double(payWaveIntensity)
+        }
+
+        // Decay pay wave intensity when not active
+        if !payWave.active {
+            for i in dots.indices {
+                if dots[i].chaserIntensity > 0 {
+                    dots[i].chaserIntensity = max(0, dots[i].chaserIntensity - dt * 2)
+                }
+            }
+        }
+    }
+
+    // MARK: - Pay Wave
+
+    /// Trigger a pay wave effect (traveling circle from bottom upward + expanding ring)
+    func triggerPayWave() {
+        guard phase == .radialPulsing else { return }
+        payWave = PayWave(
+            active: true,
+            orbDistance: 0,
+            orbAngle: 0,
+            ringRadius: 0,
+            ringOpacity: 1.0,
+            startTime: animationTime
+        )
+    }
+
+    private func updatePayWave(time: TimeInterval, dt: TimeInterval) {
+        let elapsed = time - payWave.startTime
+        // Deactivate after both effects complete
+        if elapsed > 3.0 {
+            payWave.active = false
         }
     }
 

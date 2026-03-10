@@ -47,7 +47,7 @@ struct NearbyDiscoveryDemoView: View {
                     .opacity(animator.backgroundProgress < 0.01 ? 1 : 0)
             }
 
-            // Discovery UI (title bar)
+            // Discovery UI (title bar + mode toggle)
             if showDiscoveryUI {
                 VStack(spacing: 0) {
                     if showTitle {
@@ -56,14 +56,21 @@ struct NearbyDiscoveryDemoView: View {
                     }
 
                     Spacer()
+
+                    // Mode toggle (Pay / Get Paid) — at the very bottom
+                    if currentPhase == .scanning || currentPhase == .radial {
+                        modeToggleBar
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
                 }
             }
 
-            // Avatar — positioned at the search circle's frozen location
-            // Always in the view tree; animated with opacity + scale for smoothness.
+            // Avatar — positioned at search circle (person found) or radial center (get paid)
             GeometryReader { _ in
-                avatarView
-                    .position(x: animator.personPosition.x, y: animator.personPosition.y)
+                let isRadial = currentPhase == .radial
+                let pos = isRadial ? animator.radialCenter : animator.personPosition
+                avatarView(showName: !isRadial)
+                    .position(x: pos.x, y: pos.y)
                     .scaleEffect(showAvatar ? 1.0 : 0.5)
                     .opacity(showAvatar ? 1.0 : 0)
                     .animation(.easeInOut(duration: 0.5), value: showAvatar)
@@ -138,7 +145,7 @@ struct NearbyDiscoveryDemoView: View {
 
     // MARK: - Avatar
 
-    private var avatarView: some View {
+    private func avatarView(showName: Bool) -> some View {
         VStack(spacing: 8) {
             Circle()
                 .fill(
@@ -148,19 +155,21 @@ struct NearbyDiscoveryDemoView: View {
                         endPoint: .bottomTrailing
                     )
                 )
-                .frame(width: 56, height: 56)
+                .frame(width: 48, height: 48)
                 .overlay(
                     Image(systemName: "person.fill")
-                        .font(.system(size: 24))
+                        .font(.system(size: 22))
                         .foregroundStyle(.white.opacity(0.8))
                 )
                 .overlay(
                     Circle().stroke(.white.opacity(0.3), lineWidth: 2)
                 )
 
-            Text("Elisa W.")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.white)
+            if showName {
+                Text("Elisa W.")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white)
+            }
         }
     }
 
@@ -229,6 +238,19 @@ struct NearbyDiscoveryDemoView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(Capsule().fill(.green))
+                    }
+
+                    Button(action: { animator.triggerPayWave() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "wave.3.forward")
+                                .font(.system(size: 10))
+                            Text("Pay")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Capsule().fill(.cyan))
                     }
                 }
                 .padding(.horizontal, 16)
@@ -337,6 +359,7 @@ struct NearbyDiscoveryDemoView: View {
             resetToKeypad()
 
         case .scanning:
+            selectedMode = .pay
             if animator.phase != .scanning {
                 animator.snapToGrid()
                 animator.backgroundProgress = 1
@@ -374,17 +397,28 @@ struct NearbyDiscoveryDemoView: View {
 
         case .radial:
             showDiscoveryUI = true
+            showAvatar = false
+            selectedMode = .getPaid
             let size = UIScreen.main.bounds.size
-            let center = CGPoint(x: size.width / 2, y: size.height * 0.4)
-            animator.setup(in: size)
-            animator.snapToGrid()
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            // Only do full setup if dots aren't initialized yet
+            if animator.dots.isEmpty {
+                animator.setup(in: size)
+            }
+            // Snap to grid only if coming from idle (dots need positions)
+            if animator.phase == .idle {
+                animator.snapToGrid()
+            }
             animator.backgroundProgress = 1
             animator.startRadialTransition(center: center, at: time)
             withAnimation(.easeIn(duration: 0.4)) {
                 showTitle = true
-                titleText = "You're now visible to\npeople nearby"
-                showAvatar = false
-                avatarOpacity = 0
+                titleText = "You're now visible"
+            }
+            // Avatar appears after collapse completes (web: 2100ms)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.1) { [self] in
+                guard currentPhase == .radial else { return }
+                showAvatar = true
             }
         }
     }

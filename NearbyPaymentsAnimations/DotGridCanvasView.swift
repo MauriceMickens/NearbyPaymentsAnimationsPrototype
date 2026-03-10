@@ -147,6 +147,8 @@ private struct DotGridCanvas: View {
                     with: .color(.white)
                 )
             }
+
+            // Pay wave effects are fully dot-based (no separate orb rendering)
         }
     }
 }

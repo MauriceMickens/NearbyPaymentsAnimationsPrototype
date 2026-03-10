@@ -79,20 +79,48 @@ The search circle freezes and an avatar appears at its position with a repulsion
 - Fades in with easeInOut over 500ms, scales from 0.5× to 1.0×
 - 56×56pt circle with person icon and name label below
 
-### 5. Radial Transition
+### 5. Radial Transition (Broadcast Collapse)
 
-Dots animate from grid positions to concentric ring positions around a center point (for "Get Paid" mode).
+Dots animate from grid positions to concentric ring positions around the screen center (for "Get Paid" mode). The transition features a "broadcast collapse" with per-particle scatter at the midpoint.
 
-- Rings start at 35pt inner radius (gap for avatar) with spacing of `dotSpacing * 1.1`
-- Dots distributed by ring circumference, with slight per-ring rotation offset (0.15 rad)
-- Spring easing with distance-based stagger (outer dots delayed by up to 0.4 × duration)
-- Duration: 1.4s
+**Ring layout** (matches web prototype):
+- Avatar radius: 28pt (just outside the 48px avatar)
+- 9 visible rings, max visible radius 165pt
+- Ring step: `(165 - 28) / 9 ≈ 15.2pt` per ring
+- Dots distributed by ring circumference at 15pt arc-length spacing (no per-ring rotation offset)
+- Overflow rings beyond the 9 visible rings: same spacing, fade over 3 rings `max(0, 1 - overflowRing / 3)`
 
-### 6. Radial Pulsing
+**Collapse animation**:
+- Duration: 2.0s
+- Per-particle tiny delay: `zRainDelay × 0.05s`
+- Easing: sine-based `(1 - cos(t × π)) × 0.5` (NOT spring)
+- Per-particle scatter: random angle (0–2π) and magnitude (20–60pt), envelope `sin(t × π)` peaks at midpoint
+- Overflow opacity: gradually applied during ease `1 - (1 - slotOpacity) × ease`
 
-Gentle breathing animation in the radial layout:
-- Radial pulse: `3 * sin(elapsed * 1.5 - dist * 0.01)` points along the radial direction
-- Opacity wave: `0.1 * sin(pulsePhase)` radiating outward
+**Broadcast avatar**: 48×48px circular avatar at screen center, appears 2100ms after collapse starts with scale-in animation (0.5× → 1.0× over 500ms).
+
+### 6. Radial Pulsing (Radiate)
+
+Dots are **stationary** at their ring positions. No breathing displacement. Visual movement comes from opacity-only concentric waves.
+
+**Base opacity**: 0.35 (higher than scanning's 0.30)
+
+**Concentric opacity waves** (no displacement, no size change):
+- Wave speed: 100pt/s, spawned every 2.0s
+- Wave width: 50pt
+- Multiple simultaneous waves (new one spawned while previous still fading)
+- Each wave fades over 5s: `fade = max(0, 1 - waveAge / 5)`
+- Dot opacity: `0.35 + waveAlphaBoost × 0.55` — waves brighten dots from 0.35 up to 0.90
+
+**Pay wave effect** (triggered one-shot, matches web):
+- Traveling circle: moves from pay avatar position (bottom, ~70% screen height) **upward** to radial center over 1.32s
+  - Push radius: 34pt × 3 = 102pt, push force: `proximity² × 60pt`
+  - Uses smoothstep easing for travel
+- Expanding ring: from pay avatar position, radius 16→1000pt over 2.97s
+  - Stroke width: 20–30pt, linear fade
+  - Pushes nearby dots outward by up to 12pt
+- Pay wave intensity → dot size scaling up to 1.5× + chromatic aberration
+- Deactivates after 3s
 
 ## Search Circle Wandering
 
